@@ -1,0 +1,143 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- Defines the character encoding and makes the page responsive -->
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- Sets the browser tab title -->
+    <title>RepoBridge AI | Bug Verification</title>
+
+    <!-- Loads the external CSS file for page styling -->
+    <link rel="stylesheet" href="/style.css">
+</head>
+
+<body>
+    <!-- Top navigation area containing the project name and description -->
+    <header class="topbar">
+        <div class="brand">
+            <div class="brand-icon">R</div>
+            <div>
+                <h1>RepoBridge <span>AI</span></h1>
+                <p>Evidence-driven bug verification</p>
+            </div>
+        </div>
+
+        <!-- Indicates that this is the initial prototype -->
+        <div class="status-badge">
+            <span class="status-dot"></span>
+            Prototype
+        </div>
+    </header>
+
+    <!-- Main section containing the inputs and analysis results -->
+    <main class="container">
+
+        <!-- Left panel: accepts the repository and bug details -->
+        <section class="card input-card">
+            <div class="section-heading">
+                <div class="heading-icon">01</div>
+                <div>
+                    <h2>Investigate a bug</h2>
+                    <p>Start with a repository and a reported issue.</p>
+                </div>
+            </div>
+
+            <!-- Repository URL input -->
+            <label for="repo">GitHub repository URL</label>
+            <input
+                id="repo"
+                type="url"
+                placeholder="https://github.com/owner/repository"
+                autocomplete="url"
+            >
+            <small>Enter the URL of a public GitHub repository.</small>
+
+            <!-- Bug description input -->
+            <label for="issue">Bug description</label>
+            <textarea
+                id="issue"
+                rows="5"
+                placeholder="Describe the unexpected behavior and what you expected to happen..."
+            ></textarea>
+
+            <!-- JavaScript will handle validation when this button is clicked -->
+            <button id="analyzeBtn" type="button">
+                Analyze Bug <span aria-hidden="true">→</span>
+            </button>
+
+            <!-- Displays validation messages and analysis progress -->
+            <p id="status" class="status-message" role="status" aria-live="polite">
+                Ready to investigate.
+            </p>
+
+            <!-- Explains the intended workflow to the user -->
+            <div class="workflow-note">
+                <strong>How it works</strong>
+                <p>Trace the code, investigate the bug, run a test, and review the evidence.</p>
+            </div>
+        </section>
+
+        <!-- Right panel: displays the analysis and verification report -->
+        <section class="card results-card">
+            <div class="section-heading">
+                <div class="heading-icon">02</div>
+                <div>
+                    <h2>Investigation report</h2>
+                    <p>Results and evidence will appear here.</p>
+                </div>
+            </div>
+
+            <!-- JavaScript replaces this content when the user submits input -->
+            <div id="results">
+                <div class="empty-state">
+                    <div class="empty-icon" aria-hidden="true">⌕</div>
+                    <h3>No investigation yet</h3>
+                    <p>Enter a repository and bug description to get started.</p>
+                </div>
+            </div>
+
+            <!-- Shows the main verification stages of the application -->
+            <div class="steps-panel">
+                <h3>Verification workflow</h3>
+
+                <div class="workflow-step">
+                    <span class="step-number">1</span>
+                    <div>
+                        <strong>Trace the issue</strong>
+                        <p>Find relevant source files.</p>
+                    </div>
+                    <span class="step-state">Pending</span>
+                </div>
+
+                <div class="workflow-step">
+                    <span class="step-number">2</span>
+                    <div>
+                        <strong>Investigate</strong>
+                        <p>Identify the likely cause.</p>
+                    </div>
+                    <span class="step-state">Pending</span>
+                </div>
+
+                <div class="workflow-step">
+                    <span class="step-number">3</span>
+                    <div>
+                        <strong>Verify</strong>
+                        <p>Run a regression test.</p>
+                    </div>
+                    <span class="step-state">Pending</span>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer identifies the project and summarizes its purpose -->
+    <footer>
+        <p>RepoBridge AI · Understand. Test. Verify.</p>
+    </footer>
+
+    <!-- Loads the JavaScript that handles user interactions -->
+    <script src="/script.js"></script>
+</body>
+</html>
