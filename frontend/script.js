@@ -6,8 +6,24 @@ const analyzeBtn = document.getElementById("analyzeBtn");
 const status = document.getElementById("status");
 const results = document.getElementById("results");
 
-// Run this function whenever the user clicks the Analyze Bug button.
-analyzeBtn.addEventListener("click", () => {
+// Add response content with textContent so server/user text is not treated as HTML.
+function addResultSection(title, value) {
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+
+    const content = document.createElement(
+        value !== null && typeof value === "object" ? "pre" : "p"
+    );
+    content.textContent =
+        value !== null && typeof value === "object"
+            ? JSON.stringify(value, null, 2)
+            : String(value ?? "Not provided.");
+
+    results.append(heading, content);
+}
+
+// Send the form values to Flask when the user clicks the button.
+analyzeBtn.addEventListener("click", async () => {
     // Read the user's inputs and remove unnecessary spaces.
     const repo = repoInput.value.trim();
     const issue = issueInput.value.trim();
@@ -39,34 +55,38 @@ analyzeBtn.addEventListener("click", () => {
         return; // Stop until the URL is corrected.
     }
 
-    // Update the status message after validation succeeds.
-    status.textContent =
-        "Input received. Ready for repository analysis.";
+    // Let the user know the request is in progress and avoid duplicate clicks.
+    analyzeBtn.disabled = true;
+    status.textContent = "Sending request to RepoBridge AI...";
+    results.replaceChildren();
 
-    // Create HTML elements safely instead of inserting user input as HTML.
-    const repoHeading = document.createElement("h3");
-    repoHeading.textContent = "GitHub Repository";
+    try {
+        // Flask expects these exact JSON field names at POST /api/analyze.
+        const response = await fetch("/api/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                repository_url: repo,
+                bug_description: issue
+            })
+        });
 
-    const repoText = document.createElement("p");
-    repoText.textContent = repo;
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || `Request failed (${response.status}).`);
+        }
 
-    const issueHeading = document.createElement("h3");
-    issueHeading.textContent = "Reported Bug";
-
-    const issueText = document.createElement("p");
-    issueText.textContent = issue;
-
-    // Explain that live repository and AI analysis are not connected yet.
-    const note = document.createElement("p");
-    note.textContent =
-        "Input captured successfully. GitHub retrieval and AI analysis will be connected next.";
-
-    // Replace the initial empty state with the submitted information.
-    results.replaceChildren(
-        repoHeading,
-        repoText,
-        issueHeading,
-        issueText,
-        note
-    );
+        status.textContent = data.message || "Repository request completed.";
+        addResultSection("Summary", data.summary);
+        addResultSection("Root cause", data.root_cause);
+        addResultSection("Evidence", data.evidence);
+        addResultSection("Suggested fix", data.suggested_fix);
+        addResultSection("Tests", data.tests);
+    } catch (error) {
+        // Show useful feedback for server errors, network failures, or bad JSON.
+        status.textContent = `Could not analyze the repository: ${error.message}`;
+    } finally {
+        // Allow another attempt after the request has finished.
+        analyzeBtn.disabled = false;
+    }
 });
