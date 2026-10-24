@@ -23,6 +23,7 @@ body {
     font-family: "Segoe UI", Arial, sans-serif;
     background: var(--background);
     color: var(--text);
+    overflow-x: hidden;
 }
 
 /* 3. Style the top navigation bar */
@@ -100,7 +101,11 @@ body {
     margin: 36px auto;
     padding: 0 22px;
     display: grid;
+<<<<<<< HEAD
     grid-template-columns: 1fr 1fr;
+=======
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+>>>>>>> 40b458516eff23334f51716117b7c181338c4a30
     gap: 24px;
     align-items: start;
 }
@@ -115,6 +120,32 @@ body {
     box-shadow: 0 8px 28px #25273530;
 }
 
+<<<<<<< HEAD
+=======
+/* Keep report content inside its card and wrap long paths or text. */
+.results-card,
+#results {
+    min-width: 0;
+    max-width: 100%;
+}
+
+#results h3,
+#results p,
+#results pre {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+/* Preserve readable JSON formatting while allowing it to wrap instead of scrolling sideways. */
+#results pre {
+    white-space: pre-wrap;
+    overflow-x: hidden;
+    font-family: inherit;
+    line-height: 1.6;
+}
+
+>>>>>>> 40b458516eff23334f51716117b7c181338c4a30
 /* Align the section number with its heading */
 .section-heading {
     display: flex;
