@@ -1,0 +1,362 @@
+
+/* 1. Define the color palette inspired by your reference image */
+:root {
+    --background: #464956;       /* Dark slate page background */
+    --surface: #50546D;           /* Muted lavender-blue panels */
+    --surface-light: #626681;     /* Lighter slate for contrast */
+    --primary: #E8C5B8;           /* Dusty peach accent */
+    --primary-hover: #D9B1A5;     /* Darker peach for hover effects */
+    --lavender: #B9A8B7;          /* Muted lavender-pink */
+    --text: #F2E7E0;              /* Warm off-white text */
+    --text-muted: #D0C6CB;        /* Soft muted text */
+    --border: #73758A;            /* Subtle slate border */
+    --success: #B8D4C5;           /* Soft green for success states */
+}
+
+/* 2. Apply consistent sizing and remove default page spacing */
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: "Segoe UI", Arial, sans-serif;
+    background: var(--background);
+    color: var(--text);
+}
+
+/* 3. Style the top navigation bar */
+.topbar {
+    background: var(--surface);
+    color: var(--text);
+    padding: 22px 6%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+/* Align the logo and project name horizontally */
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+}
+
+/* Create the rounded logo tile */
+.brand-icon {
+    width: 46px;
+    height: 46px;
+    display: grid;
+    place-items: center;
+    border-radius: 12px;
+    background: var(--primary);
+    color: var(--surface);
+    font-size: 24px;
+    font-weight: bold;
+}
+
+/* Style the project title */
+.brand h1 {
+    margin: 0;
+    font-size: 25px;
+}
+
+.brand h1 span {
+    color: var(--primary);
+}
+
+/* Style the subtitle under the project name */
+.brand p {
+    margin: 5px 0 0;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+/* Show the prototype status in a subtle pill */
+.status-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    font-size: 12px;
+    color: var(--text);
+}
+
+/* Add the small status indicator */
+.status-dot {
+    width: 8px;
+    height: 8px;
+    background: var(--success);
+    border-radius: 50%;
+}
+
+/* Arrange the input and report cards in two columns */
+.container {
+    max-width: 1150px;
+    margin: 36px auto;
+    padding: 0 22px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    align-items: start;
+}
+
+/* Style the main cards using the muted lavender palette */
+.card {
+    min-width: 0;
+    padding: 26px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: 0 8px 28px #25273530;
+}
+
+/* Align the section number with its heading */
+.section-heading {
+    display: flex;
+    align-items: flex-start;
+    gap: 13px;
+    margin-bottom: 26px;
+}
+
+/* Give each section number a dusty-pink background */
+.heading-icon {
+    flex-shrink: 0;
+    padding: 9px;
+    background: var(--lavender);
+    color: #393C4D;
+    border-radius: 9px;
+    font-size: 13px;
+    font-weight: bold;
+}
+
+/* Style section titles */
+h2 {
+    margin: 0 0 7px;
+    font-size: 21px;
+}
+
+/* Style explanatory text beneath headings */
+.section-heading p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+/* Make form labels easy to read */
+label {
+    display: block;
+    margin: 20px 0 8px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+/* Use warm, light backgrounds for the form fields */
+input,
+textarea {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: #F0E3DC;
+    color: #343747;
+    font: inherit;
+    font-size: 14px;
+}
+
+/* Highlight the field currently being edited */
+input:focus,
+textarea:focus {
+    outline: 2px solid var(--primary);
+    border-color: var(--primary);
+}
+
+/* Style placeholder text */
+input::placeholder,
+textarea::placeholder {
+    color: #827783;
+}
+
+/* Allow the description field to grow vertically */
+textarea {
+    resize: vertical;
+    line-height: 1.6;
+}
+
+/* Style the helper text below the repository input */
+small {
+    display: block;
+    margin-top: 7px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+/* Make the Analyze Bug button stand out with peach */
+button {
+    width: 100%;
+    margin-top: 22px;
+    padding: 14px 18px;
+    border: none;
+    border-radius: 9px;
+    background: var(--primary);
+    color: #343747;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s ease, transform 0.2s ease;
+}
+
+/* Add a subtle interaction when hovering over the button */
+button:hover {
+    background: var(--primary-hover);
+    transform: translateY(-1px);
+}
+
+/* Display form validation and status messages */
+.status-message {
+    min-height: 20px;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+/* Give the explanatory workflow panel a soft lavender tone */
+.workflow-note {
+    margin-top: 24px;
+    padding: 15px;
+    background: #5C6079;
+    border-radius: 10px;
+    border-left: 3px solid var(--primary);
+}
+
+/* Style the workflow note title */
+.workflow-note strong {
+    font-size: 13px;
+}
+
+/* Style the workflow note description */
+.workflow-note p {
+    margin: 7px 0 0;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+/* Center the empty report message */
+.empty-state {
+    padding: 26px 10px;
+    text-align: center;
+}
+
+/* Use peach for the decorative search icon */
+.empty-icon {
+    color: var(--primary);
+    font-size: 48px;
+}
+
+/* Style the empty report heading */
+.empty-state h3 {
+    margin: 12px 0 8px;
+    font-size: 16px;
+}
+
+/* Style the empty report description */
+.empty-state p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+/* Separate the workflow checklist from the report */
+.steps-panel {
+    margin-top: 24px;
+    padding-top: 22px;
+    border-top: 1px solid var(--border);
+}
+
+/* Style the verification workflow heading */
+.steps-panel h3 {
+    margin: 0 0 16px;
+    font-size: 15px;
+}
+
+/* Arrange each verification step in a row */
+.workflow-step {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 0;
+    border-bottom: 1px solid #73758A60;
+}
+
+/* Style the numbered workflow circles */
+.step-number {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+    background: var(--lavender);
+    color: #343747;
+    font-size: 12px;
+    font-weight: bold;
+}
+
+/* Let workflow descriptions use the available space */
+.workflow-step div {
+    flex: 1;
+}
+
+/* Style workflow step titles */
+.workflow-step strong {
+    font-size: 13px;
+}
+
+/* Style workflow step descriptions */
+.workflow-step p {
+    margin: 4px 0 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+/* Display the initial state of each verification step */
+.step-state {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+/* Style the footer */
+footer {
+    padding: 22px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+/* Stack the cards vertically on mobile screens */
+@media (max-width: 760px) {
+    .container {
+        grid-template-columns: 1fr;
+        margin-top: 22px;
+    }
+
+    .topbar {
+        padding: 18px 20px;
+    }
+
+    .brand h1 {
+        font-size: 21px;
+    }
+
+    .card {
+        padding: 20px;
+    }
+}
