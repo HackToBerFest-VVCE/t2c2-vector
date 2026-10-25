@@ -48,6 +48,79 @@ function displayReportText(value) {
     return decodeReportText(value).replace(/\*\*/g, "").trim();
 }
 
+function isValidRepositoryUrl(value) {
+    try {
+        const url = new URL(value);
+        const repositoryPath = url.pathname.match(
+            /^\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/?$/
+        );
+        return (
+            url.protocol === "https:" &&
+            url.hostname === "github.com" &&
+            !url.username &&
+            !url.password &&
+            !url.port &&
+            !url.search &&
+            !url.hash &&
+            repositoryPath !== null &&
+            ![".", ".."].includes(repositoryPath[2])
+        );
+    } catch {
+        return false;
+    }
+}
+
+function isObjectRecord(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isValidAnalysisReport(report) {
+    if (
+        !isObjectRecord(report) ||
+        typeof report.mode !== "string" ||
+        typeof report.summary !== "string" ||
+        !(
+            typeof report.evidence === "string" ||
+            (Array.isArray(report.evidence) &&
+                report.evidence.every((line) => typeof line === "string"))
+        )
+    ) {
+        return false;
+    }
+
+    const explanation = report.beginner_explanation;
+    if (
+        explanation != null &&
+        (!isObjectRecord(explanation) ||
+            (explanation.technical_terms !== undefined &&
+                (!Array.isArray(explanation.technical_terms) ||
+                    !explanation.technical_terms.every(isObjectRecord))))
+    ) {
+        return false;
+    }
+
+    const guide = report.investigation_guide;
+    if (
+        guide != null &&
+        (!isObjectRecord(guide) ||
+            (guide.missing_information !== undefined &&
+                !Array.isArray(guide.missing_information)) ||
+            (guide.steps !== undefined &&
+                (!Array.isArray(guide.steps) || !guide.steps.every(isObjectRecord))))
+    ) {
+        return false;
+    }
+
+    return (
+        (report.suggested_tests === undefined ||
+            (Array.isArray(report.suggested_tests) &&
+                report.suggested_tests.every(isObjectRecord))) &&
+        (report.tests === undefined ||
+            report.tests === null ||
+            isObjectRecord(report.tests))
+    );
+}
+
 // Get references to the form elements so JavaScript can interact with them.
 const repoInput = document.getElementById("repo");
 const issueInput = document.getElementById("issue");
@@ -57,39 +130,35 @@ const results = document.getElementById("results");
 
 // Run this function whenever the user clicks the Analyze Bug button.
 analyzeBtn.addEventListener("click", async () => {
+    if (analyzeBtn.disabled) {
+        return;
+    }
+
+    // Clear the previous report before validating or starting a new request.
+    results.replaceChildren();
+
     // Read the user's inputs and remove unnecessary spaces.
     const repo = repoInput.value.trim();
     const issue = issueInput.value.trim();
 
-    // Make sure the user has filled in both required fields.
-    if (!repo || !issue) {
-        status.textContent =
-            "Please enter the repository URL and bug description.";
-        return; // Stop processing when required input is missing.
+    if (!repo) {
+        status.textContent = "Enter a GitHub repository URL.";
+        return;
     }
 
-    // Check that the URL points to a GitHub repository.
-    try {
-        const url = new URL(repo);
-        const parts = url.pathname.split("/").filter(Boolean);
+    if (!issue) {
+        status.textContent = "Enter a bug description.";
+        return;
+    }
 
-        // A repository URL must contain an owner and repository name.
-        if (
-            url.protocol !== "https:" ||
-            url.hostname !== "github.com" ||
-            parts.length !== 2
-        ) {
-            throw new Error("Invalid GitHub repository URL");
-        }
-    } catch {
-        // Tell the user how to correct an invalid URL.
+    if (!isValidRepositoryUrl(repo)) {
         status.textContent =
             "Enter a valid URL, such as https://github.com/owner/repository";
-        return; // Stop until the URL is corrected.
+        return;
     }
 
-    status.textContent = "Analyzing repository...";
     analyzeBtn.disabled = true;
+    status.textContent = "Analyzing repository...";
 
     try {
         let response;
@@ -123,18 +192,18 @@ analyzeBtn.addEventListener("click", async () => {
         if (!response.ok) {
             const detail =
                 report && typeof report.message === "string"
-                    ? `: ${report.message}`
+                    ? `: ${displayReportText(report.message)}`
                     : report && typeof report.error === "string"
-                        ? `: ${report.error}`
+                        ? `: ${displayReportText(report.error)}`
                     : "";
             status.textContent =
                 `Request failed with HTTP ${response.status}${detail}`;
             return;
         }
 
-        if (!report || typeof report !== "object" || Array.isArray(report)) {
+        if (!isValidAnalysisReport(report)) {
             status.textContent =
-                "The backend returned an unexpected response format.";
+                "The backend returned an incomplete or unexpected analysis report.";
             return;
         }
 

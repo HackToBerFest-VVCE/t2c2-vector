@@ -165,6 +165,22 @@ class GitHubRepositoryTests(unittest.TestCase):
         with self.assertRaises(UnsupportedRepositoryError):
             get_repository_sources("https://example.com/user/project")
 
+    def test_rejects_repository_urls_with_missing_or_empty_path_segments(self):
+        invalid_urls = (
+            "https://github.com/owner",
+            "https://github.com/owner/",
+            "https://github.com//owner/repository",
+            "https://github.com/owner//repository",
+            "https://github.com/owner/repository/extra",
+        )
+        for repository_url in invalid_urls:
+            with self.subTest(repository_url=repository_url):
+                with patch("github_repository.urlopen") as mocked_urlopen:
+                    with self.assertRaises(UnsupportedRepositoryError):
+                        get_repository_sources(repository_url)
+
+                mocked_urlopen.assert_not_called()
+
     def test_reports_repository_not_found(self):
         from urllib.error import HTTPError
 

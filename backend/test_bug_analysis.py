@@ -387,6 +387,52 @@ class AnalyzeEndpointTests(unittest.TestCase):
                 self.assertIn(expected_error, response.get_json()["error"])
                 mocked_retrieval.assert_not_called()
 
+    def test_malformed_and_non_object_requests_return_client_errors(self):
+        requests = (
+            {
+                "data": "not valid JSON",
+                "content_type": "application/json",
+                "expected_error": "Request body must be a JSON object.",
+            },
+            {
+                "json": ["not", "an", "object"],
+                "expected_error": "Request body must be a JSON object.",
+            },
+            {
+                "json": {
+                    "repository_url": 123,
+                    "bug_description": "payment timeout",
+                },
+                "expected_error": "repository_url is required",
+            },
+            {
+                "json": {
+                    "repository_url": "https://github.com/example/project",
+                    "bug_description": ["payment", "timeout"],
+                },
+                "expected_error": "bug_description is required",
+            },
+        )
+
+        for request_kwargs in requests:
+            with self.subTest(request_kwargs=request_kwargs):
+                with patch("app.get_repository_sources") as mocked_retrieval:
+                    response = self.client.post(
+                        "/api/analyze",
+                        **{
+                            key: value
+                            for key, value in request_kwargs.items()
+                            if key != "expected_error"
+                        },
+                    )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(
+                    request_kwargs["expected_error"],
+                    response.get_json()["error"],
+                )
+                mocked_retrieval.assert_not_called()
+
     def test_malformed_github_url_returns_client_error(self):
         with patch("app.get_repository_sources") as mocked_retrieval:
             response = self.client.post(
@@ -400,6 +446,32 @@ class AnalyzeEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("repository_url must look like", response.get_json()["error"])
         mocked_retrieval.assert_not_called()
+
+    def test_repository_url_requires_owner_and_repository_path(self):
+        invalid_urls = (
+            "https://github.com/owner",
+            "https://github.com/owner/",
+            "https://github.com//owner/repository",
+            "https://github.com/owner//repository",
+            "https://github.com/owner/repository/extra",
+        )
+        for repository_url in invalid_urls:
+            with self.subTest(repository_url=repository_url):
+                with patch("app.get_repository_sources") as mocked_retrieval:
+                    response = self.client.post(
+                        "/api/analyze",
+                        json={
+                            "repository_url": repository_url,
+                            "bug_description": "payment timeout",
+                        },
+                    )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(
+                    "repository_url must look like",
+                    response.get_json()["error"],
+                )
+                mocked_retrieval.assert_not_called()
 
     def analyze(self, bug_description, files):
         # The route's required JSON field names are repository_url and

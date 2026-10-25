@@ -32,37 +32,19 @@ function displayProse(value) {
     return sandbox.result;
 }
 
-test("decodes direct and escaped numeric HTML entities", () => {
-    assert.equal(decode("&#x20;"), " ");
-    assert.equal(decode("&#x52;"), "R");
-    assert.equal(decode("&amp;#x20;"), " ");
-    assert.equal(decode("&amp;amp;#x20;"), " ");
-    assert.equal(decode("&lt;tag&gt; &quot;text&quot;"), '<tag> "text"');
-});
-
-test("decodes the exact entity strings shown in the report", () => {
-    assert.equal(
-        displayProse("Keyword match:&#x20;**&#x54;he search..."),
-        "Keyword match: The search..."
-    );
-    assert.equal(
-        displayProse("Status:&#x20;**&#x4E;OT_RUN"),
-        "Status: NOT_RUN"
-    );
-    assert.equal(displayProse("&#x52;ecord"), "Record");
-});
-
-test("keeps invalid numeric entities as text", () => {
-    assert.equal(decode("&#x110000;"), "&#x110000;");
-});
-
-test("renders repository-derived content as text in the report", async () => {
+function createFrontendHarness({
+    repositoryUrl = "https://github.com/example/repository",
+    bugDescription = "payment timeout",
+    fetchImplementation = async () => ({ok: true, json: async () => ({})}),
+} = {}) {
     class FakeNode {
         constructor(tagName) {
             this.tagName = tagName;
             this.children = [];
             this._text = "";
             this.listeners = {};
+            this.disabled = false;
+            this.value = "";
         }
 
         set textContent(value) {
@@ -94,8 +76,8 @@ test("renders repository-derived content as text in the report", async () => {
             new FakeNode(id),
         ])
     );
-    elements.get("repo").value = "https://github.com/example/repository";
-    elements.get("issue").value = "payment timeout";
+    elements.get("repo").value = repositoryUrl;
+    elements.get("issue").value = bugDescription;
 
     const document = {
         getElementById: (id) => elements.get(id),
@@ -106,6 +88,181 @@ test("renders repository-derived content as text in the report", async () => {
             return node;
         },
     };
+    const fetchCalls = [];
+    const sandbox = {
+        document,
+        URL,
+        fetch: (...args) => {
+            fetchCalls.push(args);
+            return fetchImplementation(...args);
+        },
+    };
+    vm.runInNewContext(source, sandbox);
+    return {elements, fetchCalls};
+}
+
+test("decodes direct and escaped numeric HTML entities", () => {
+    assert.equal(decode("&#x20;"), " ");
+    assert.equal(decode("&#x52;"), "R");
+    assert.equal(decode("&amp;#x20;"), " ");
+    assert.equal(decode("&amp;amp;#x20;"), " ");
+    assert.equal(decode("&lt;tag&gt; &quot;text&quot;"), '<tag> "text"');
+});
+
+test("decodes the exact entity strings shown in the report", () => {
+    assert.equal(
+        displayProse("Keyword match:&#x20;**&#x54;he search..."),
+        "Keyword match: The search..."
+    );
+    assert.equal(
+        displayProse("Status:&#x20;**&#x4E;OT_RUN"),
+        "Status: NOT_RUN"
+    );
+    assert.equal(displayProse("&#x52;ecord"), "Record");
+});
+
+test("keeps invalid numeric entities as text", () => {
+    assert.equal(decode("&#x110000;"), "&#x110000;");
+});
+
+test("validates required inputs and repository URLs before sending a request", async () => {
+    const invalidSubmissions = [
+        {
+            repositoryUrl: "",
+            bugDescription: "",
+            expectedStatus: "Enter a GitHub repository URL.",
+        },
+        {
+            repositoryUrl: "https://github.com/example/repository",
+            bugDescription: "",
+            expectedStatus: "Enter a bug description.",
+        },
+        ...[
+            "not-a-github-url",
+            "http://github.com/example/repository",
+            "https://github.com/example",
+            "https://github.com/example/repository/extra",
+            "https://github.com//repository",
+            "https://github.com/example//repository",
+            "https://github.com.example.com/example/repository",
+            "https://user@github.com/example/repository",
+            "https://github.com/example/repository?tab=readme",
+            "https://github.com/example/repository#readme",
+        ].map((repositoryUrl) => ({
+            repositoryUrl,
+            bugDescription: "payment timeout",
+            expectedStatus: "Enter a valid URL",
+        })),
+    ];
+
+    for (const submission of invalidSubmissions) {
+        const {elements, fetchCalls} = createFrontendHarness(submission);
+        const results = elements.get("results");
+        results.textContent = "Previous investigation report";
+
+        await elements.get("analyzeBtn").listeners.click();
+
+        assert.equal(fetchCalls.length, 0, submission.repositoryUrl);
+        assert.equal(results.textContent, "", submission.repositoryUrl);
+        assert.ok(
+            elements.get("status").textContent.includes(submission.expectedStatus),
+            submission.repositoryUrl
+        );
+        assert.equal(elements.get("analyzeBtn").disabled, false);
+    }
+});
+
+test("failed and incomplete analyses clear old reports and show readable errors", async () => {
+    const failures = [
+        {
+            fetchImplementation: async () => {
+                throw new Error("offline");
+            },
+            expectedStatus: "Unable to reach the backend",
+        },
+        {
+            fetchImplementation: async () => ({
+                ok: false,
+                status: 404,
+                json: async () => ({
+                    error: "Repository or file was not found.",
+                }),
+            }),
+            expectedStatus: "HTTP 404: Repository or file was not found.",
+        },
+        {
+            fetchImplementation: async () => ({
+                ok: true,
+                json: async () => {
+                    throw new Error("invalid JSON");
+                },
+            }),
+            expectedStatus: "The backend returned invalid JSON.",
+        },
+        {
+            fetchImplementation: async () => ({
+                ok: true,
+                json: async () => ({mode: "INVESTIGATION"}),
+            }),
+            expectedStatus: "incomplete or unexpected analysis report",
+        },
+        {
+            fetchImplementation: async () => ({
+                ok: true,
+                json: async () => ({
+                    mode: "INVESTIGATION",
+                    summary: "Analysis complete.",
+                    evidence: [],
+                    suggested_tests: [null],
+                }),
+            }),
+            expectedStatus: "incomplete or unexpected analysis report",
+        },
+    ];
+
+    for (const failure of failures) {
+        const {elements} = createFrontendHarness(failure);
+        const results = elements.get("results");
+        results.textContent = "Previous investigation report";
+
+        await elements.get("analyzeBtn").listeners.click();
+
+        assert.equal(results.textContent, "");
+        assert.ok(elements.get("status").textContent.includes(failure.expectedStatus));
+        assert.equal(elements.get("analyzeBtn").disabled, false);
+    }
+});
+
+test("disables duplicate submissions while an analysis is pending", async () => {
+    let resolveResponse;
+    const pendingResponse = new Promise((resolve) => {
+        resolveResponse = resolve;
+    });
+    const {elements, fetchCalls} = createFrontendHarness({
+        fetchImplementation: () => pendingResponse,
+    });
+
+    const firstSubmission = elements.get("analyzeBtn").listeners.click();
+    await elements.get("analyzeBtn").listeners.click();
+
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(elements.get("analyzeBtn").disabled, true);
+
+    resolveResponse({
+        ok: true,
+        json: async () => ({
+            mode: "INVESTIGATION",
+            summary: "No matching source lines were found.",
+            evidence: [],
+        }),
+    });
+    await firstSubmission;
+
+    assert.equal(elements.get("analyzeBtn").disabled, false);
+    assert.equal(fetchCalls.length, 1);
+});
+
+test("renders repository-derived content as text in the report", async () => {
     const hostileText = "<img src=x onerror=alert(1)>";
     const report = {
         mode: "INVESTIGATION",
@@ -154,16 +311,20 @@ test("renders repository-derived content as text in the report", async () => {
         },
     };
 
-    const sandbox = {
-        document,
-        URL,
-        fetch: async () => ({
+    const {elements, fetchCalls} = createFrontendHarness({
+        fetchImplementation: async () => ({
             ok: true,
             json: async () => report,
         }),
-    };
-    vm.runInNewContext(source, sandbox);
+    });
     await elements.get("analyzeBtn").listeners.click();
+
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fetchCalls[0][0], "/api/analyze");
+    assert.deepEqual(JSON.parse(fetchCalls[0][1].body), {
+        repository_url: "https://github.com/example/repository",
+        bug_description: "payment timeout",
+    });
 
     const results = elements.get("results");
     const allNodes = [];

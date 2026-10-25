@@ -21,7 +21,7 @@ The prototype uses a deliberately bounded, read-only workflow:
 3. Select up to three small, supported source files, ranking paths by overlap with useful words in the bug description and preferring application files over tests.
 4. Compare the description with retrieved source lines. A useful line must contain at least two distinct diagnostic terms; generic words alone are not enough.
 5. Show matching file paths, line numbers, and nearby code as clues for a person to review.
-6. Return a cautious explanation, investigation steps, and—only when retrieved code compares request size with its configured limit—a possible test scenario.
+6. Return a cautious explanation and investigation steps. Suggest a possible test scenario only when retrieved code compares request size with its configured limit or nearby source documentation describes that behavior.
 
 This approach is intentionally not an autonomous code runner. Repository contents are retrieved as text; the application does not import or execute them.
 
@@ -42,6 +42,7 @@ This approach is intentionally not an autonomous code runner. Repository content
 
 - Python installed on your machine.
 - Internet access to reach the GitHub API when analyzing a repository.
+- Node.js installed if you want to run the frontend tests.
 
 The repository does not currently include a Python dependency manifest. The backend imports Flask; install it in a virtual environment:
 
@@ -106,13 +107,24 @@ From the repository root:
 
 The automated tests cover evidence matching, API input validation and response behavior, retrieval error handling, and GitHub retrieval using mocked HTTP responses. They test RepoBridge AI itself; they do **not** run the tests of repositories supplied to the app.
 
+## Run the frontend checks
+
+From the repository root:
+
+```powershell
+node --check frontend\script.js
+node --test frontend\test_script.js
+```
+
+The frontend tests cover report rendering, safe text display, input validation, stale-report clearing, and request failures.
+
 ## Limitations
 
 - Only public GitHub repositories are supported; private repository authentication is not implemented.
 - The retrieval is intentionally limited to a few small source files. Relevant code can be missed if it is in an unselected file, an unsupported file type, or beyond the configured size limits.
 - Relevance is estimated using keyword and path matching, not deep semantic analysis. A useful match is still only a clue and may be unrelated.
 - The application does not clone repositories, install their dependencies, execute their code, reproduce bugs, or run their test suites.
-- Suggested test scenarios are currently narrow and generated only when matching retrieved code compares request content length with its configured maximum. They are not discovered existing tests or commands.
+- Suggested test scenarios are currently narrow and generated only when matching code compares request content length with its configured maximum or nearby source documentation describes the request-size behavior. They are not discovered existing tests or commands.
 - GitHub API availability and unauthenticated rate limits can affect retrieval.
 - This is a hackathon prototype, not a production-grade diagnostic or security review tool.
 

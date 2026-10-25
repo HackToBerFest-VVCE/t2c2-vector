@@ -82,26 +82,30 @@ def _parse_repository_url(repository_url):
         raise UnsupportedRepositoryError(
             "Use a public GitHub URL like https://github.com/owner/repository."
         ) from error
-    parts = [part for part in parsed_url.path.split("/") if part]
+    parts = parsed_url.path.split("/")
+    if len(parts) == 4 and parts[-1] == "":
+        parts.pop()
     if (
         parsed_url.scheme.lower() != "https"
         or parsed_url.netloc.lower() != "github.com"
         or parsed_url.query
         or parsed_url.fragment
-        or len(parts) != 2
-        or not re.fullmatch(r"[A-Za-z0-9-]+", parts[0])
+        or len(parts) != 3
+        or parts[0] != ""
+        or not re.fullmatch(r"[A-Za-z0-9-]+", parts[1])
     ):
         raise UnsupportedRepositoryError(
             "Use a public GitHub URL like https://github.com/owner/repository."
         )
 
-    repository = parts[1]
+    owner = parts[1]
+    repository = parts[2]
     if repository.endswith(".git"):
         repository = repository[:-4]
     if not re.fullmatch(r"[A-Za-z0-9._-]+", repository) or repository in {".", ".."}:
         raise UnsupportedRepositoryError("The repository name in the URL is invalid.")
 
-    return parts[0], repository
+    return owner, repository
 
 
 def _read_json(url, max_response_bytes):
