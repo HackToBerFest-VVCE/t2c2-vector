@@ -1,5 +1,6 @@
 
 from pathlib import Path
+from flask import Flask, jsonify, send_from_directory
 import re
 from urllib.parse import urlsplit
 
@@ -47,6 +48,8 @@ def health():
     })
 
 
+<<<<<<< HEAD
+=======
 @app.errorhandler(413)
 def request_too_large(_error):
     # Keep the HTTP status at 413 while returning a clear JSON error message.
@@ -317,5 +320,6 @@ def analyze():
     })
 
 
+>>>>>>> 40b458516eff23334f51716117b7c181338c4a30
 if __name__ == "__main__":
     app.run(debug=True)
