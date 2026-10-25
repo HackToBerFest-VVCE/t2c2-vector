@@ -221,6 +221,7 @@ class AnalyzeEndpointTests(unittest.TestCase):
                 "root_cause",
                 "evidence",
                 "suggested_fix",
+                "suggested_tests",
                 "tests",
             },
         )
@@ -264,6 +265,8 @@ class AnalyzeEndpointTests(unittest.TestCase):
                 self.assertFalse(
                     any("[keyword(s):" in item for item in result["evidence"])
                 )
+                self.assertEqual(result["suggested_tests"], [])
+                self.assertEqual(result["tests"]["status"], "NOT_RUN")
 
     def test_concrete_technical_details_are_not_classified_as_broad(self):
         for description in (
@@ -296,6 +299,28 @@ class AnalyzeEndpointTests(unittest.TestCase):
         )
         self.assertIn("Insufficient evidence", result["root_cause"])
         self.assertIn("No fix can be suggested", result["suggested_fix"])
+        self.assertEqual(result["suggested_tests"], [])
+        self.assertEqual(result["tests"]["status"], "NOT_RUN")
+
+    def test_quantum_pineapple_description_returns_no_suggested_test(self):
+        files = [
+            make_source_file(
+                "src/flask/wrappers.py",
+                "def get_response(self):\n    return self.response\n",
+            )
+        ]
+
+        response = self.analyze(
+            "The quantum pineapple scheduler fails during moonlight synchronization.",
+            files,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        result = response.get_json()
+        self.assert_analysis_schema(result)
+        self.assertIn("found 0 matching source line(s)", result["summary"])
+        self.assertEqual(result["suggested_tests"], [])
+        self.assertEqual(result["tests"]["status"], "NOT_RUN")
 
     def test_matching_evidence_is_reported_as_unconfirmed(self):
         # A match yields a tentative investigation report, not a verified cause
@@ -342,6 +367,10 @@ class AnalyzeEndpointTests(unittest.TestCase):
             any("MAX_CONTENT_LENGTH" in item and "413" in item for item in result["evidence"])
         )
         self.assertIn("not a confirmed root cause", result["root_cause"])
+        self.assertEqual(len(result["suggested_tests"]), 1)
+        self.assertIn("MAX_CONTENT_LENGTH", result["suggested_tests"][0])
+        self.assertIn("HTTP 413", result["suggested_tests"][0])
+        self.assertIn("src/request_limits.py:1", result["suggested_tests"][0])
         self.assertEqual(result["tests"]["status"], "NOT_RUN")
 
 

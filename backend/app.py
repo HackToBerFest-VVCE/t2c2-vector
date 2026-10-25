@@ -48,8 +48,6 @@ def health():
     })
 
 
-<<<<<<< HEAD
-=======
 @app.errorhandler(413)
 def request_too_large(_error):
     # Keep the HTTP status at 413 while returning a clear JSON error message.
@@ -263,7 +261,29 @@ def analyze():
     )
     evidence.extend(matching_evidence)
 
+    suggested_tests = []
     if strongest_match is not None:
+        matched_keywords = set(strongest_match["keywords"])
+        if {"413", "max_content_length"}.issubset(matched_keywords):
+            scenario = (
+                "Suggested scenario (not executed): send a request whose body exceeds "
+                "MAX_CONTENT_LENGTH and assert that it receives HTTP 413. This suggestion "
+                "is based on the reported limit/status and matching code at {}:{}; confirm "
+                "the intended limit and response before treating them as expected behavior."
+            ).format(strongest_match["path"], strongest_match["line"])
+        else:
+            scenario = (
+                "Suggested scenario (not executed): write a focused regression scenario for "
+                "the reported behavior involving {} and exercise the matching code at {}:{}. "
+                "Assert the intended outcome described in the report, clarifying it first if "
+                "needed. This is a suggestion only; no test result is implied."
+            ).format(
+                ", ".join(strongest_match["keywords"]),
+                strongest_match["path"],
+                strongest_match["line"],
+            )
+        suggested_tests.append(scenario)
+
         root_cause = (
             "Possible explanation only (not a confirmed root cause): the strongest keyword match is in "
             "{}:{} and nearby retrieved code (lines {}-{}) contains the same reported terms: {}. "
@@ -313,6 +333,7 @@ def analyze():
         "root_cause": root_cause,
         "evidence": evidence,
         "suggested_fix": suggested_fix,
+        "suggested_tests": suggested_tests,
         "tests": {
             "status": "NOT_RUN",
             "details": "No repository tests were run."
@@ -320,6 +341,5 @@ def analyze():
     })
 
 
->>>>>>> 40b458516eff23334f51716117b7c181338c4a30
 if __name__ == "__main__":
     app.run(debug=True)

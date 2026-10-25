@@ -6,27 +6,7 @@ const analyzeBtn = document.getElementById("analyzeBtn");
 const status = document.getElementById("status");
 const results = document.getElementById("results");
 
-<<<<<<< HEAD
 // Run this function whenever the user clicks the Analyze Bug button.
-=======
-// Add response content with textContent so server/user text is not treated as HTML.
-function addResultSection(title, value) {
-    const heading = document.createElement("h3");
-    heading.textContent = title;
-
-    const content = document.createElement(
-        value !== null && typeof value === "object" ? "pre" : "p"
-    );
-    content.textContent =
-        value !== null && typeof value === "object"
-            ? JSON.stringify(value, null, 2)
-            : String(value ?? "Not provided.");
-
-    results.append(heading, content);
-}
-
-// Send the form values to Flask when the user clicks the button.
->>>>>>> 40b458516eff23334f51716117b7c181338c4a30
 analyzeBtn.addEventListener("click", async () => {
     // Read the user's inputs and remove unnecessary spaces.
     const repo = repoInput.value.trim();
@@ -157,6 +137,26 @@ analyzeBtn.addEventListener("click", async () => {
         }
 
         addField("Suggested fix", report.suggested_fix);
+
+        const suggestedTestsHeading = document.createElement("h3");
+        suggestedTestsHeading.textContent = "Suggested Tests (not executed)";
+        results.append(suggestedTestsHeading);
+
+        if (Array.isArray(report.suggested_tests) && report.suggested_tests.length > 0) {
+            const suggestedTestsList = document.createElement("ul");
+            report.suggested_tests.forEach((suggestion) => {
+                const suggestionItem = document.createElement("li");
+                suggestionItem.textContent = displayValue(suggestion);
+                suggestedTestsList.append(suggestionItem);
+            });
+            results.append(suggestedTestsList);
+        } else {
+            const noSuggestions = document.createElement("p");
+            noSuggestions.textContent =
+                "No suggested test scenarios were generated from relevant evidence.";
+            results.append(noSuggestions);
+        }
+
         addField("Tests status", report.tests?.status);
         addField("Tests details", report.tests?.details);
 
@@ -165,38 +165,6 @@ analyzeBtn.addEventListener("click", async () => {
                 ? "Demo response received; no repository analysis or tests were performed."
                 : "Analysis report received.";
     } finally {
-    // Let the user know the request is in progress and avoid duplicate clicks.
-    analyzeBtn.disabled = true;
-    status.textContent = "Sending request to RepoBridge AI...";
-    results.replaceChildren();
-
-    try {
-        // Flask expects these exact JSON field names at POST /api/analyze.
-        const response = await fetch("/api/analyze", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                repository_url: repo,
-                bug_description: issue
-            })
-        });
-
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.error || `Request failed (${response.status}).`);
-        }
-
-        status.textContent = data.message || "Repository request completed.";
-        addResultSection("Summary", data.summary);
-        addResultSection("Root cause", data.root_cause);
-        addResultSection("Evidence", data.evidence);
-        addResultSection("Suggested fix", data.suggested_fix);
-        addResultSection("Tests", data.tests);
-    } catch (error) {
-        // Show useful feedback for server errors, network failures, or bad JSON.
-        status.textContent = `Could not analyze the repository: ${error.message}`;
-    } finally {
-        // Allow another attempt after the request has finished.
         analyzeBtn.disabled = false;
     }
 });
