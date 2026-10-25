@@ -30,6 +30,21 @@ ISSUE_STOP_WORDS = {
     "routing", "should", "that", "the", "their", "there", "these", "this",
     "to", "use", "was", "when", "where", "which", "with", "will",
 }
+ISSUE_PATH_STOP_WORDS = {
+    "endpoint", "exceeding", "expected", "expects", "json", "return",
+    "returned", "returning", "returns",
+}
+ISSUE_PATH_HINTS = {
+    "max_content_length": {
+        "app", "config", "request", "wrapper", "wrappers", "exception", "error",
+    },
+    "content_length": {"config", "request", "wrapper", "wrappers"},
+    "requests": {"config", "request", "wrapper", "wrappers"},
+    "413": {"request", "response", "exception", "error"},
+    "500": {"request", "response", "exception", "error"},
+    "404": {"routing", "route", "request", "response", "exception", "error"},
+    "timeout": {"timeout", "client", "connection", "request"},
+}
 
 
 class GitHubRetrievalError(Exception):
@@ -61,7 +76,12 @@ def _parse_repository_url(repository_url):
     if not isinstance(repository_url, str):
         raise UnsupportedRepositoryError("repository_url must be text.")
 
-    parsed_url = urlsplit(repository_url.strip())
+    try:
+        parsed_url = urlsplit(repository_url.strip())
+    except ValueError as error:
+        raise UnsupportedRepositoryError(
+            "Use a public GitHub URL like https://github.com/owner/repository."
+        ) from error
     parts = [part for part in parsed_url.path.split("/") if part]
     if (
         parsed_url.scheme.lower() != "https"
@@ -138,28 +158,36 @@ def _issue_terms(bug_description):
         r"[A-Za-z][A-Za-z0-9_]{2,}|(?<!\w)\d{3}(?!\w)",
         (bug_description or "").lower(),
     )
-    return {word for word in words if word not in ISSUE_STOP_WORDS}
+    return {
+        word
+        for word in words
+        if word not in ISSUE_STOP_WORDS and word not in ISSUE_PATH_STOP_WORDS
+    }
 
 
 def _rank_source_file(entry, issue_terms):
-    """Rank source paths by issue-word overlap and prefer short, non-test paths."""
+    """Rank paths using report terms and retrieval-only technical path hints."""
     path = entry["path"]
     # Split common filename separators so names like payment_handler.py match
     # both "payment" and "handler" from the bug description.
     normalized_path = re.sub(r"[._/-]+", " ", path.lower())
     path_words = set(re.findall(r"[A-Za-z][A-Za-z0-9]{2,}", normalized_path))
     score = len(path_words & issue_terms) * 10
+    for term in issue_terms:
+        score += len(path_words & ISSUE_PATH_HINTS.get(term, set())) * 4
+
     path_parts = [part.lower() for part in path.split("/")]
     file_name = path_parts[-1]
-    if any(part in {"test", "tests", "spec", "specs"} for part in path_parts[:-1]):
-        score -= 2
-    if file_name.startswith(("test_", "tests_", "spec_")) or file_name.endswith(
-        ("_test.py", "_tests.py", ".spec.js", ".spec.ts")
-    ):
+    is_test_file = (
+        any(part in {"test", "tests", "spec", "specs"} for part in path_parts[:-1])
+        or file_name.startswith(("test_", "tests_", "spec_"))
+        or file_name.endswith(("_test.py", "_tests.py", ".spec.js", ".spec.ts"))
+    )
+    if is_test_file:
         score -= 2
     if len(path_parts) == 1:
         score += 1
-    return score, -len(path_parts), path.lower()
+    return is_test_file, -score, len(path_parts), path.lower()
 
 
 def get_repository_sources(
@@ -227,7 +255,7 @@ def get_repository_sources(
             continue
         candidates.append(entry)
 
-    candidates.sort(key=lambda entry: _rank_source_file(entry, issue_terms), reverse=True)
+    candidates.sort(key=lambda entry: _rank_source_file(entry, issue_terms))
     selected = candidates[:max_files]
     files = []
     for entry in selected:

@@ -23,6 +23,7 @@ NON_DIAGNOSTIC_WORDS = {
     "doesn", "during", "not", "response", "responses", "return", "returned",
     "returning", "returns", "something", "work", "working",
 }
+MIN_EVIDENCE_KEYWORDS_PER_LINE = 2
 
 
 @app.route("/")
@@ -37,7 +38,9 @@ def stylesheet():
 
 @app.route("/script.js")
 def javascript():
-    return send_from_directory(FRONTEND_DIR, "script.js")
+    response = send_from_directory(FRONTEND_DIR, "script.js", max_age=0)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.route("/api/health")
@@ -58,7 +61,7 @@ def request_too_large(_error):
 
 
 def find_matching_evidence(files, bug_description, max_matches=10):
-    """Rank retrieved source lines that contain meaningful issue keywords."""
+    """Rank source lines supported by meaningful terms in their nearby context."""
     description_words = re.findall(
         r"[A-Za-z][A-Za-z0-9_]{2,}|(?<!\w)\d{3}(?!\w)",
         bug_description,
@@ -92,7 +95,17 @@ def find_matching_evidence(files, bug_description, max_matches=10):
         )
         for word in keywords
     }
+    technical_terms = {
+        word.lower()
+        for word in re.findall(
+            r"\b[A-Z][A-Z0-9_]{2,}\b|"
+            r"\b[A-Z][a-z]+(?:[A-Z][A-Za-z0-9]*)+\b|"
+            r"(?<!\w)\d{3}(?!\w)",
+            bug_description,
+        )
+    }
     ranked_matches = []
+    single_keyword_match_count = 0
     for source_file in files:
         path = source_file["path"]
         source_lines = source_file["content"].splitlines()
@@ -104,20 +117,47 @@ def find_matching_evidence(files, bug_description, max_matches=10):
             or file_name.endswith(("_test.py", "_tests.py", ".spec.js", ".spec.ts"))
         )
 
-        for line_number, line in enumerate(source_lines, start=1):
-            matching_keywords = [
+        line_keywords = [
+            {
                 word for word, pattern in keyword_patterns.items() if pattern.search(line)
-            ]
+            }
+            for line in source_lines
+        ]
+        qualified_lines = {}
+        for line_index, matching_keywords in enumerate(line_keywords):
             if not matching_keywords:
                 continue
+            window_start = max(0, line_index - 2)
+            window_end = min(len(source_lines), line_index + 3)
+            window_keywords = set().union(*line_keywords[window_start:window_end])
+            has_same_line_evidence = (
+                len(matching_keywords) >= MIN_EVIDENCE_KEYWORDS_PER_LINE
+            )
+            has_technical_nearby_evidence = (
+                len(window_keywords) >= MIN_EVIDENCE_KEYWORDS_PER_LINE
+                and bool(window_keywords & technical_terms)
+            )
+            if not has_same_line_evidence and not has_technical_nearby_evidence:
+                single_keyword_match_count += 1
+                continue
 
+            qualified_keywords = (
+                matching_keywords if has_same_line_evidence else window_keywords
+            )
+            qualified_lines[line_index] = qualified_keywords
+
+        for line_index, matching_keywords in qualified_lines.items():
+            line_number = line_index + 1
+            line = source_lines[line_index]
             # Keep long source lines readable in the API response.
             excerpt = line.strip()
             if len(excerpt) > 240:
                 excerpt = excerpt[:237] + "..."
-            evidence_text = "{}:{}: [keyword(s): {}] {}".format(
+            own_keywords = sorted(line_keywords[line_index])
+            evidence_text = "{}:{}: [match: {}; nearby terms: {}] {}".format(
                 path,
                 line_number,
+                ", ".join(own_keywords),
                 ", ".join(sorted(matching_keywords)),
                 excerpt or "(blank matching line)",
             )
@@ -125,62 +165,205 @@ def find_matching_evidence(files, bug_description, max_matches=10):
             ranked_matches.append(
                 (
                     is_test_file,
-                    -len(matching_keywords),
+                    -len(own_keywords),
                     path.lower(),
                     line_number,
                     evidence_text,
                     path,
                     matching_keywords,
                     source_lines,
+                    line_keywords,
+                    qualified_lines,
                 )
             )
 
     if not ranked_matches:
+        if single_keyword_match_count:
+            return [
+                "No useful evidence found: source lines did not contain enough distinct terms "
+                "together or within nearby lines linked by a technical identifier or status code."
+            ], 0, None
         return [
             "No useful evidence found: none of the meaningful bug-description keywords matched the retrieved source lines."
         ], 0, None
 
-    matched_keywords = {
-        keyword for match in ranked_matches for keyword in match[6]
-    }
-    if len(matched_keywords) < 2:
-        return [
-            "No useful evidence found: fewer than two specific bug-description keywords matched the retrieved source lines."
-        ], 0, None
-
     ranked_matches.sort(key=lambda match: match[:4])
     total_matches = len(ranked_matches)
-    evidence = [match[4] for match in ranked_matches[:max_matches]]
+    evidence = []
+    displayed_matches = ranked_matches[:max_matches]
+    display_lines_by_path = {}
+    matching_lines_by_path = {}
+    source_lines_by_path = {}
+    for match in displayed_matches:
+        path = match[5]
+        source_lines = match[7]
+        context_start = max(1, match[3] - 2)
+        context_end = min(len(source_lines), match[3] + 2)
+        display_lines_by_path.setdefault(path, set()).update(
+            range(context_start, context_end + 1)
+        )
+        matching_lines_by_path.setdefault(path, set()).add(match[3])
+        source_lines_by_path[path] = (source_lines, match[8], match[9])
+
+    for path in sorted(display_lines_by_path, key=str.lower):
+        source_lines, line_keywords, qualified_lines = source_lines_by_path[path]
+        matching_line_numbers = sorted(matching_lines_by_path[path])
+        evidence.append(
+            "Evidence in {} (matching source line(s): {}; context is not counted as evidence):".format(
+                path, ", ".join(str(number) for number in matching_line_numbers)
+            )
+        )
+        for context_line_number in sorted(display_lines_by_path[path]):
+            context_text = source_lines[context_line_number - 1].strip()
+            if len(context_text) > 240:
+                context_text = context_text[:237] + "..."
+            context_index = context_line_number - 1
+            line_matches = qualified_lines.get(context_index)
+            if line_matches:
+                line_label = "[match: {}; nearby terms: {}]".format(
+                    ", ".join(sorted(line_keywords[context_index])),
+                    ", ".join(sorted(line_matches)),
+                )
+            else:
+                line_label = "[context, not counted as evidence]"
+            evidence.append(
+                "{}:{}: {} {}".format(
+                    path,
+                    context_line_number,
+                    line_label,
+                    context_text or "(blank line)",
+                )
+            )
+
     strongest_match = ranked_matches[0]
     context_lines = strongest_match[7]
     context_start = max(1, strongest_match[3] - 2)
     context_end = min(len(context_lines), strongest_match[3] + 2)
-    evidence.append(
-        "Nearby context for strongest match (context is not proof): {}:{}-{}.".format(
-            strongest_match[5], context_start, context_end
-        )
-    )
-    for context_line_number in range(context_start, context_end + 1):
-        context_text = context_lines[context_line_number - 1].strip()
-        if len(context_text) > 240:
-            context_text = context_text[:237] + "..."
-        evidence.append(
-            "{}:{}: [context] {}".format(
-                strongest_match[5], context_line_number, context_text or "(blank line)"
-            )
-        )
     if total_matches > max_matches:
         evidence.append(
-            "Showing the 10 strongest matches out of {} matching lines.".format(total_matches)
+            "Showing the {} strongest matches out of {} useful matching lines.".format(
+                max_matches, total_matches
+            )
         )
     best_details = {
         "path": strongest_match[5],
         "line": strongest_match[3],
         "keywords": sorted(strongest_match[6]),
+        "line_keywords": sorted(strongest_match[8][strongest_match[3] - 1]),
+        "source_line": context_lines[strongest_match[3] - 1],
         "context_start": context_start,
         "context_end": context_end,
+        "matching_lines": [
+            line_number + 1
+            for line_number in sorted(strongest_match[9])
+        ],
+        "matching_source_lines": [
+            {
+                "line": line_number + 1,
+                "content": context_lines[line_number],
+                "keywords": sorted(strongest_match[9][line_number]),
+            }
+            for line_number in sorted(strongest_match[9])
+        ],
+        "context_source_lines": [
+            {
+                "line": line_number,
+                "content": context_lines[line_number - 1],
+            }
+            for line_number in range(context_start, context_end + 1)
+        ],
     }
     return evidence, total_matches, best_details
+
+
+def _request_size_evidence(strongest_match):
+    """Find supported request-size evidence in matches and nearby source context."""
+    if strongest_match is None:
+        return None
+
+    request_size_terms = {
+        "content_length",
+        "max_content_length",
+        "request body",
+        "413",
+        "requestentitytoolarge",
+    }
+    if not request_size_terms.intersection(strongest_match["keywords"]):
+        return None
+
+    source_lines = {
+        line["line"]: line
+        for line in (
+            strongest_match["context_source_lines"]
+            + strongest_match["matching_source_lines"]
+        )
+    }
+    source_lines = [source_lines[number] for number in sorted(source_lines)]
+    source_context = " ".join(line["content"] for line in source_lines)
+    comparison_pattern = re.compile(
+        r"(?P<left>[^<>!=]{0,200})(?P<operator>>=|>|<=|<)(?P<right>[^<>!=]{0,200})",
+        re.IGNORECASE,
+    )
+    has_request_size_comparison = any(
+        (
+            comparison.group("operator") in {">", ">="}
+            and re.search(r"\bcontent_length\b", comparison.group("left"), re.IGNORECASE)
+            and re.search(r"\bmax_content_length\b", comparison.group("right"), re.IGNORECASE)
+        )
+        or (
+            comparison.group("operator") in {"<", "<="}
+            and re.search(r"\bmax_content_length\b", comparison.group("left"), re.IGNORECASE)
+            and re.search(r"\bcontent_length\b", comparison.group("right"), re.IGNORECASE)
+        )
+        for comparison in comparison_pattern.finditer(source_context)
+    )
+    if has_request_size_comparison:
+        comparison_source_line = next(
+            (
+                line["line"]
+                for line in source_lines
+                if (
+                    re.search(r"\bcontent_length\b", line["content"], re.IGNORECASE)
+                    and re.search(r"(?:>=|>|<=|<)", line["content"])
+                )
+            ),
+            next(
+                line["line"]
+                for line in source_lines
+                if re.search(r"(?:>=|>|<=|<)", line["content"])
+            ),
+        )
+        return {
+            "line": comparison_source_line,
+            "kind": "comparison",
+        }
+
+    normalized_context = source_context.lower().replace("_", " ")
+    documents_limit_behavior = (
+        re.search(r"\bmax(?:imum)?[\s-]+content[\s-]+length\b", normalized_context)
+        and re.search(
+            r"\b(exceed\w*|larger than|greater than|above|over the limit|too large)\b",
+            normalized_context,
+        )
+        and re.search(r"\b(413|requestentitytoolarge)\b", normalized_context)
+    )
+    if not documents_limit_behavior:
+        return None
+
+    documentation_lines = [
+        line for line in source_lines
+        if re.search(
+            r"\b(413|requestentitytoolarge|exceed\w*|larger than|greater than)\b",
+            line["content"],
+            re.IGNORECASE,
+        )
+    ]
+    if not documentation_lines:
+        return None
+    return {
+        "line": documentation_lines[0]["line"],
+        "kind": "documentation",
+    }
 
 
 @app.route("/api/analyze", methods=["POST"])
@@ -199,7 +382,12 @@ def analyze():
         return jsonify({"error": "bug_description is required and cannot be empty."}), 400
 
     # Accept standard HTTPS GitHub repository URLs with an optional final slash.
-    parsed_url = urlsplit(repo_url.strip())
+    try:
+        parsed_url = urlsplit(repo_url.strip())
+    except ValueError:
+        return jsonify({
+            "error": "repository_url must look like https://github.com/owner/repository."
+        }), 400
     path_parts = parsed_url.path.split("/")
     is_repository_path = (
         len(path_parts) == 3
@@ -259,49 +447,46 @@ def analyze():
         "Retrieved file: {} ({} bytes).".format(file["path"], file["size"])
         for file in retrieval["files"]
     )
-    evidence.extend(matching_evidence)
+    evidence.extend(dict.fromkeys(matching_evidence))
 
     suggested_tests = []
-    if strongest_match is not None:
-        matched_keywords = set(strongest_match["keywords"])
-        if {"413", "max_content_length"}.issubset(matched_keywords):
-            scenario = (
-                "Suggested scenario (not executed): send a request whose body exceeds "
-                "MAX_CONTENT_LENGTH and assert that it receives HTTP 413. This suggestion "
-                "is based on the reported limit/status and matching code at {}:{}; confirm "
-                "the intended limit and response before treating them as expected behavior."
-            ).format(strongest_match["path"], strongest_match["line"])
-        else:
-            scenario = (
-                "Suggested scenario (not executed): write a focused regression scenario for "
-                "the reported behavior involving {} and exercise the matching code at {}:{}. "
-                "Assert the intended outcome described in the report, clarifying it first if "
-                "needed. This is a suggestion only; no test result is implied."
-            ).format(
-                ", ".join(strongest_match["keywords"]),
-                strongest_match["path"],
-                strongest_match["line"],
-            )
-        suggested_tests.append(scenario)
+    request_size_evidence = _request_size_evidence(strongest_match)
+    has_request_size_branch = request_size_evidence is not None
+    if has_request_size_branch:
+        suggested_tests.append({
+            "title": "Check behavior at the configured request-size limit",
+            "setup": (
+                "Find the configured MAX_CONTENT_LENGTH value and prepare request bodies "
+                "just below, at, and above that limit."
+            ),
+            "action": (
+                "Send each request through the route that contains the request-size check."
+                if request_size_evidence["kind"] == "comparison"
+                else "Check the request-handling behavior described by this source documentation."
+            ),
+            "expected_result": (
+                "Record the actual response for each size and compare its status and body "
+                "with the endpoint's documented or expected behavior."
+            ),
+            "evidence_basis": {
+                "path": strongest_match["path"],
+                "line": request_size_evidence["line"],
+            },
+        })
 
+    if strongest_match is not None:
         root_cause = (
-            "Possible explanation only (not a confirmed root cause): the strongest keyword match is in "
-            "{}:{} and nearby retrieved code (lines {}-{}) contains the same reported terms: {}. "
-            "This region may be related to the symptom, but keyword overlap and nearby context alone "
-            "are insufficient to prove causation.".format(
+            "Possible lead (not a confirmed root cause): {}:{} matches reported terms {}. "
+            "Reproduce the behavior before drawing a conclusion.".format(
                 strongest_match["path"],
                 strongest_match["line"],
-                strongest_match["context_start"],
-                strongest_match["context_end"],
                 ", ".join(strongest_match["keywords"]),
             )
         )
         suggested_fix = (
-            "Tentative next step: review {}:{}-{} and reproduce the reported behavior before proposing a fix. "
-            "No specific code change is confirmed by this keyword search.".format(
-                strongest_match["path"],
-                strongest_match["context_start"],
-                strongest_match["context_end"],
+            "Review {}:{} and reproduce the issue before changing code. "
+            "No specific code change is confirmed by this search.".format(
+                strongest_match["path"], strongest_match["line"]
             )
         )
     else:
@@ -311,6 +496,157 @@ def analyze():
         )
         suggested_fix = (
             "No fix can be suggested from the available evidence. Provide a more specific symptom or retrieve relevant source files."
+        )
+
+    if strongest_match is None:
+        beginner_explanation = {
+            "what_code_does": (
+                "No specific code line in the retrieved files matched the report strongly enough to explain it."
+            ),
+            "what_might_be_wrong": (
+                "There is not enough matching evidence to suggest a cause."
+            ),
+            "why_evidence_matters": (
+                "Without a relevant source line, suggesting a cause would be a guess."
+            ),
+            "what_to_check_next": [
+                "Describe the exact action that fails and what you expected to happen.",
+                "Include any error message, endpoint, or status code.",
+                "Look for source files related to that behavior.",
+            ],
+            "technical_terms": [
+                {
+                    "term": "Evidence",
+                    "meaning": "A clue from retrieved code. It can guide a check, but it is not proof.",
+                },
+                {
+                    "term": "Root cause",
+                    "meaning": "The underlying reason a problem happens.",
+                },
+            ],
+        }
+    elif has_request_size_branch:
+        beginner_explanation = {
+            "what_code_does": (
+                (
+                    "The retrieved code compares request body length with MAX_CONTENT_LENGTH."
+                    if request_size_evidence["kind"] == "comparison"
+                    else "The retrieved documentation says an oversized request can raise HTTP 413."
+                )
+            ),
+            "what_might_be_wrong": (
+                "If the problem involves a large request, this check may be related. "
+                "It does not confirm the cause."
+            ),
+            "why_evidence_matters": (
+                "The relevant source is at {}:{}; nearby lines provide context.".format(
+                    strongest_match["path"], request_size_evidence["line"]
+                )
+            ),
+            "what_to_check_next": [
+                "Confirm the configured MAX_CONTENT_LENGTH value.",
+                "Compare the observed response with the endpoint's documented behavior.",
+                "Check requests just below, at, and above the configured limit.",
+            ],
+            "technical_terms": [
+                {
+                    "term": "MAX_CONTENT_LENGTH",
+                    "meaning": "A setting that limits the size of request data.",
+                },
+            ],
+        }
+    else:
+        nearby_keywords = sorted(
+            set(strongest_match["keywords"]) - set(strongest_match["line_keywords"])
+        )
+        beginner_explanation = {
+            "what_code_does": (
+                "The matched line contains {}.{} It cannot explain the full behavior by itself; "
+                "read it with the nearby code."
+            ).format(
+                ", ".join(strongest_match["line_keywords"]),
+                (
+                    " Related terms appear on nearby lines: {}.".format(
+                        ", ".join(nearby_keywords)
+                    )
+                    if nearby_keywords
+                    else ""
+                ),
+            ),
+            "what_might_be_wrong": (
+                "This line may be related to the report, but it does not prove the cause."
+            ),
+            "why_evidence_matters": (
+                "It points to {}:{} for inspection, but a keyword match is a clue, not proof."
+            ).format(strongest_match["path"], strongest_match["line"]),
+            "what_to_check_next": [
+                "Read the matched line and nearby code.",
+                "Reproduce the reported behavior and record what happens.",
+                "Compare that result with what you expected to happen.",
+            ],
+            "technical_terms": [
+                {
+                    "term": "Keyword match",
+                    "meaning": "The search found a report word in retrieved code.",
+                },
+                {
+                    "term": "Source line",
+                    "meaning": "A numbered line in a code file.",
+                },
+            ],
+        }
+
+    missing_information = [
+        "If not already clear, note the exact steps that reproduce the problem.",
+        "State what you expected and what happened instead.",
+        "Include an error message, endpoint, or status code if one applies.",
+    ]
+    if (
+        strongest_match is not None
+        and not has_request_size_branch
+        and {"content_length", "max_content_length", "request body", "413"}
+        .intersection(strongest_match["keywords"])
+    ):
+        missing_information = [
+            "The retrieved lines do not show both the configured size limit and what happens when a request exceeds it.",
+            "Provide the configured limit and the observed response for an oversized request.",
+        ]
+
+    investigation_guide = {
+        "missing_information": missing_information,
+        "steps": [
+            {
+                "title": "Write down the problem",
+                "instruction": (
+                    "Record the action you took, what you expected, and what happened instead. "
+                    "Include an error message or status code if you saw one."
+                ),
+            },
+            {
+                "title": "Try to reproduce it",
+                "instruction": (
+                    "Repeat the same steps and note whether the same result happens. "
+                    "Record the exact result."
+                ),
+            },
+            {
+                "title": "Inspect the available code",
+                "instruction": (
+                    "No relevant source line was found in the retrieved files. "
+                    "Use the missing details to locate or retrieve the code involved."
+                ),
+            },
+        ],
+    }
+    if strongest_match is not None:
+        investigation_guide["steps"][2]["instruction"] = (
+            "Review the matching lines and clearly labeled nearby context in Evidence. "
+            "Nearby context is not separate proof."
+        )
+    if has_request_size_branch:
+        investigation_guide["steps"][1]["instruction"] = (
+            "Compare requests just below, at, and above MAX_CONTENT_LENGTH. "
+            "Record the response and check it against the endpoint's documented behavior."
         )
 
     # Report keyword matches as clues, not as a proven cause or a completed test.
@@ -334,6 +670,8 @@ def analyze():
         "evidence": evidence,
         "suggested_fix": suggested_fix,
         "suggested_tests": suggested_tests,
+        "beginner_explanation": beginner_explanation,
+        "investigation_guide": investigation_guide,
         "tests": {
             "status": "NOT_RUN",
             "details": "No repository tests were run."

@@ -1,4 +1,53 @@
 
+function decodeReportText(value) {
+    if (value === null || value === undefined) {
+        return "Not provided.";
+    }
+
+    let text = typeof value === "string" ? value : String(value);
+    const namedEntities = {
+        lt: "<",
+        gt: ">",
+        quot: '"',
+        apos: "'",
+        nbsp: "\u00a0",
+    };
+    const numericEntityPattern =
+        /&#(?:x([0-9a-f]{1,6})|(\d{1,7}));/gi;
+    for (let pass = 0; pass < 8; pass += 1) {
+        const decodedAmpersands = text.replace(/&amp;/gi, "&");
+        const decodedNamedEntities = decodedAmpersands.replace(
+            /&(lt|gt|quot|apos|nbsp);/gi,
+            (entity, name) => namedEntities[name.toLowerCase()] || entity
+        );
+        const decodedEntities = decodedNamedEntities.replace(
+            numericEntityPattern,
+            (entity, hexadecimal, decimal) => {
+                const codePoint = Number.parseInt(
+                    hexadecimal || decimal,
+                    hexadecimal ? 16 : 10
+                );
+                if (
+                    codePoint > 0x10ffff ||
+                    (codePoint >= 0xd800 && codePoint <= 0xdfff)
+                ) {
+                    return entity;
+                }
+                return String.fromCodePoint(codePoint);
+            }
+        );
+        if (decodedEntities === text) {
+            break;
+        }
+        text = decodedEntities;
+    }
+    return text;
+}
+
+function displayReportText(value) {
+    return decodeReportText(value).replace(/\*\*/g, "").trim();
+}
+
 // Get references to the form elements so JavaScript can interact with them.
 const repoInput = document.getElementById("repo");
 const issueInput = document.getElementById("issue");
@@ -75,6 +124,8 @@ analyzeBtn.addEventListener("click", async () => {
             const detail =
                 report && typeof report.message === "string"
                     ? `: ${report.message}`
+                    : report && typeof report.error === "string"
+                        ? `: ${report.error}`
                     : "";
             status.textContent =
                 `Request failed with HTTP ${response.status}${detail}`;
@@ -87,21 +138,44 @@ analyzeBtn.addEventListener("click", async () => {
             return;
         }
 
-        const displayValue = (value) => {
-            if (value === null || value === undefined) {
-                return "Not provided.";
-            }
-            return typeof value === "string" ? value : String(value);
-        };
+        const displaySourceText = decodeReportText;
+        const displayProse = displayReportText;
 
-        const addField = (label, value) => {
+        const addSection = (label) => {
+            const section = document.createElement("section");
+            section.className = "report-section";
             const heading = document.createElement("h3");
             heading.textContent = label;
+            section.append(heading);
+            results.append(section);
+            return section;
+        };
 
+        const addText = (parent, label, value) => {
             const content = document.createElement("p");
-            content.textContent = displayValue(value);
+            if (label) {
+                const fieldLabel = document.createElement("strong");
+                fieldLabel.textContent = `${displayProse(label)}: `;
+                content.append(fieldLabel);
+            }
+            content.append(document.createTextNode(displayProse(value)));
+            parent.append(content);
+        };
 
-            results.append(heading, content);
+        const addList = (
+            parent,
+            values,
+            ordered = false,
+            formatValue = displayProse
+        ) => {
+            const list = document.createElement(ordered ? "ol" : "ul");
+            values.forEach((value) => {
+                const item = document.createElement("li");
+                item.textContent = formatValue(value);
+                list.append(item);
+            });
+            parent.append(list);
+            return list;
         };
 
         results.replaceChildren();
@@ -113,52 +187,110 @@ analyzeBtn.addEventListener("click", async () => {
             results.append(demoNotice);
         }
 
-        addField("Mode", report.mode);
-        addField("Message", report.message);
-        addField("Summary", report.summary);
-        addField("Root cause", report.root_cause);
-
-        const evidenceHeading = document.createElement("h3");
-        evidenceHeading.textContent = "Evidence";
-        results.append(evidenceHeading);
-
-        if (Array.isArray(report.evidence)) {
-            const evidenceList = document.createElement("ul");
-            report.evidence.forEach((item) => {
-                const evidenceItem = document.createElement("li");
-                evidenceItem.textContent = displayValue(item);
-                evidenceList.append(evidenceItem);
+        const summarySection = addSection("Simple summary");
+        addText(summarySection, "", report.summary);
+        const investigationGuide = report.investigation_guide;
+        const beginnerExplanation = report.beginner_explanation;
+        const codeSection = addSection("What the code shows");
+        addText(codeSection, "", beginnerExplanation?.what_code_does);
+        if (Array.isArray(beginnerExplanation?.technical_terms)) {
+            beginnerExplanation.technical_terms.forEach((entry) => {
+                addText(
+                    codeSection,
+                    entry.term,
+                    entry.meaning
+                );
             });
-            results.append(evidenceList);
-        } else {
-            const evidenceText = document.createElement("p");
-            evidenceText.textContent = displayValue(report.evidence);
-            results.append(evidenceText);
         }
 
-        addField("Suggested fix", report.suggested_fix);
+        const relevanceSection = addSection("Why it may matter");
+        addText(
+            relevanceSection,
+            "",
+            beginnerExplanation?.what_might_be_wrong
+        );
+        addText(
+            relevanceSection,
+            "Why this clue matters",
+            beginnerExplanation?.why_evidence_matters
+        );
 
-        const suggestedTestsHeading = document.createElement("h3");
-        suggestedTestsHeading.textContent = "Suggested Tests (not executed)";
-        results.append(suggestedTestsHeading);
+        const missingSection = addSection("What information is missing");
+        if (Array.isArray(investigationGuide?.missing_information)) {
+            addList(missingSection, investigationGuide.missing_information);
+        }
+
+        const stepsSection = addSection("Suggested investigation steps");
+        if (Array.isArray(investigationGuide?.steps)) {
+            const steps = document.createElement("ol");
+            investigationGuide.steps.forEach((step) => {
+                const item = document.createElement("li");
+                const title = document.createElement("strong");
+                title.textContent = `${displayProse(step.title)}: `;
+                item.append(
+                    title,
+                    document.createTextNode(displayProse(step.instruction))
+                );
+                steps.append(item);
+            });
+            stepsSection.append(steps);
+        }
+        const evidenceSection = addSection("Evidence and nearby context");
+        if (Array.isArray(report.evidence)) {
+            addList(
+                evidenceSection,
+                Array.from(new Set(report.evidence.map(displaySourceText))),
+                false,
+                displaySourceText
+            );
+        } else {
+            addText(evidenceSection, "", report.evidence);
+        }
+
+        const suggestedTestsSection = addSection("Suggested tests");
+        const testStatus = report.tests?.status || "NOT_RUN";
+        const notExecutedNote = document.createElement("p");
+        notExecutedNote.textContent =
+            "These are possible scenarios based on retrieved code; they have not been run.";
+        suggestedTestsSection.append(notExecutedNote);
 
         if (Array.isArray(report.suggested_tests) && report.suggested_tests.length > 0) {
             const suggestedTestsList = document.createElement("ul");
             report.suggested_tests.forEach((suggestion) => {
                 const suggestionItem = document.createElement("li");
-                suggestionItem.textContent = displayValue(suggestion);
+                const title = document.createElement("h4");
+                title.textContent = displayProse(suggestion.title || "Suggested scenario");
+                suggestionItem.append(title);
+                [
+                    ["Setup", suggestion.setup],
+                    ["Action", suggestion.action],
+                    ["Expected result", suggestion.expected_result],
+                ].forEach(([label, value]) => {
+                    addText(suggestionItem, label, value);
+                });
+
+                const evidenceBasis = suggestion.evidence_basis;
+                const evidenceText =
+                    evidenceBasis &&
+                    typeof evidenceBasis.path === "string" &&
+                    Number.isInteger(evidenceBasis.line) &&
+                    evidenceBasis.line > 0
+                        ? `${displaySourceText(evidenceBasis.path)}:${evidenceBasis.line}`
+                        : "Source location unavailable.";
+                addText(suggestionItem, "Evidence", evidenceText);
                 suggestedTestsList.append(suggestionItem);
             });
-            results.append(suggestedTestsList);
+            suggestedTestsSection.append(suggestedTestsList);
         } else {
             const noSuggestions = document.createElement("p");
             noSuggestions.textContent =
-                "No suggested test scenarios were generated from relevant evidence.";
-            results.append(noSuggestions);
+                "No test scenario is suggested because the retrieved evidence does not support one.";
+            suggestedTestsSection.append(noSuggestions);
         }
 
-        addField("Tests status", report.tests?.status);
-        addField("Tests details", report.tests?.details);
+        const testStatusSection = addSection("Test execution status");
+        addText(testStatusSection, "Status", testStatus);
+        addText(testStatusSection, "Details", report.tests?.details);
 
         status.textContent =
             report.mode === "DEMO"

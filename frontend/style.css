@@ -101,11 +101,7 @@ body {
     margin: 36px auto;
     padding: 0 22px;
     display: grid;
-<<<<<<< HEAD
-    grid-template-columns: 1fr 1fr;
-=======
     grid-template-columns: repeat(2, minmax(0, 1fr));
->>>>>>> 40b458516eff23334f51716117b7c181338c4a30
     gap: 24px;
     align-items: start;
 }
@@ -120,8 +116,6 @@ body {
     box-shadow: 0 8px 28px #25273530;
 }
 
-<<<<<<< HEAD
-=======
 /* Keep report content inside its card and wrap long paths or text. */
 .results-card,
 #results {
@@ -145,7 +139,42 @@ body {
     line-height: 1.6;
 }
 
->>>>>>> 40b458516eff23334f51716117b7c181338c4a30
+.report-section {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+
+.report-section h3 {
+    margin: 0 0 10px;
+    font-size: 16px;
+}
+
+.report-section h4 {
+    margin: 14px 0 6px;
+    font-size: 14px;
+}
+
+.report-section p,
+.report-section li {
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.65;
+    overflow-wrap: anywhere;
+}
+
+.report-section ul,
+.report-section ol {
+    padding-left: 22px;
+}
+
+.report-section li + li {
+    margin-top: 6px;
+}
+
+.report-section strong {
+    color: var(--text);
+}
 /* Align the section number with its heading */
 .section-heading {
     display: flex;
