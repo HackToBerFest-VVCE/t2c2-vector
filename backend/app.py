@@ -8,6 +8,7 @@ from github_repository import (
     GitHubNetworkError,
     GitHubRateLimitError,
     GitHubRetrievalError,
+    ISSUE_STOP_WORDS,
     RepositoryAccessError,
     RepositoryNotFoundError,
     UnsupportedRepositoryError,
@@ -17,6 +18,10 @@ from github_repository import (
 app = Flask(__name__)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+NON_DIAGNOSTIC_WORDS = {
+    "doesn", "during", "not", "response", "responses", "return", "returned",
+    "returning", "returns", "something", "work", "working",
+}
 
 
 @app.route("/")
@@ -53,18 +58,20 @@ def request_too_large(_error):
 
 def find_matching_evidence(files, bug_description, max_matches=10):
     """Rank retrieved source lines that contain meaningful issue keywords."""
-    common_words = {
-        "about", "after", "again", "being", "could", "does", "from", "have",
-        "into", "issue", "more", "only", "please", "reported", "should",
-        "that", "their", "there", "these", "this", "when", "where", "which",
-        "with", "application", "app", "request", "handling", "error", "bug",
-        "problem", "failure", "broken", "flask", "routing",
-    }
+    description_words = re.findall(
+        r"[A-Za-z][A-Za-z0-9_]{2,}|(?<!\w)\d{3}(?!\w)",
+        bug_description,
+    )
     keywords = {
         word.lower()
-        for word in re.findall(r"[A-Za-z][A-Za-z0-9_]{2,}", bug_description)
-        if word.lower() not in common_words
+        for word in description_words
+        if word.lower() not in ISSUE_STOP_WORDS
+        and word.lower() not in NON_DIAGNOSTIC_WORDS
     }
+    # Keep this technical phrase useful without treating either word as a
+    # meaningful standalone keyword.
+    if re.search(r"(?<!\w)request[\s_-]+body(?!\w)", bug_description, re.IGNORECASE):
+        keywords.add("request body")
     if not keywords:
         return [
             "Bug description is too broad to identify a specific issue. Add concrete symptoms or affected feature names."
@@ -76,7 +83,12 @@ def find_matching_evidence(files, bug_description, max_matches=10):
 
     # Match whole keywords without caring about capitalization.
     keyword_patterns = {
-        word: re.compile(r"(?<!\w){}(?!\w)".format(re.escape(word)), re.IGNORECASE)
+        word: re.compile(
+            r"(?<!\w){}(?!\w)".format(
+                r"[\s_-]+".join(re.escape(part) for part in word.split())
+            ),
+            re.IGNORECASE,
+        )
         for word in keywords
     }
     ranked_matches = []
@@ -125,6 +137,14 @@ def find_matching_evidence(files, bug_description, max_matches=10):
     if not ranked_matches:
         return [
             "No useful evidence found: none of the meaningful bug-description keywords matched the retrieved source lines."
+        ], 0, None
+
+    matched_keywords = {
+        keyword for match in ranked_matches for keyword in match[6]
+    }
+    if len(matched_keywords) < 2:
+        return [
+            "No useful evidence found: fewer than two specific bug-description keywords matched the retrieved source lines."
         ], 0, None
 
     ranked_matches.sort(key=lambda match: match[:4])
@@ -191,8 +211,8 @@ def analyze():
         and path_parts[2] not in {".", ".."}
     )
     if not (
-        parsed_url.scheme == "https"
-        and parsed_url.netloc == "github.com"
+        parsed_url.scheme.lower() == "https"
+        and parsed_url.netloc.lower() == "github.com"
         and not parsed_url.query
         and not parsed_url.fragment
         and is_repository_path

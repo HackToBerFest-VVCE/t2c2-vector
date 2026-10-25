@@ -22,9 +22,13 @@ IGNORED_DIRECTORY_NAMES = {
     "vendor", "venv",
 }
 ISSUE_STOP_WORDS = {
-    "about", "after", "again", "being", "could", "does", "error", "from",
-    "have", "issue", "more", "only", "please", "reported", "should", "that",
-    "their", "there", "these", "this", "when", "where", "which", "with",
+    "a", "about", "after", "again", "an", "and", "application", "app", "are",
+    "as", "at", "be", "being", "body", "bug", "broken", "by", "can", "code",
+    "could", "does", "error", "failure", "flask", "for", "from", "handling",
+    "have", "http", "if", "in", "into", "is", "issue", "it", "limit", "more",
+    "of", "on", "only", "or", "please", "problem", "reported", "request",
+    "routing", "should", "that", "the", "their", "there", "these", "this",
+    "to", "use", "was", "when", "where", "which", "with", "will",
 }
 
 
@@ -60,8 +64,8 @@ def _parse_repository_url(repository_url):
     parsed_url = urlsplit(repository_url.strip())
     parts = [part for part in parsed_url.path.split("/") if part]
     if (
-        parsed_url.scheme != "https"
-        or parsed_url.netloc != "github.com"
+        parsed_url.scheme.lower() != "https"
+        or parsed_url.netloc.lower() != "github.com"
         or parsed_url.query
         or parsed_url.fragment
         or len(parts) != 2
@@ -96,6 +100,7 @@ def _read_json(url, max_response_bytes):
             if len(body) > max_response_bytes:
                 raise UnsupportedRepositoryError("GitHub returned more data than this demo allows.")
     except HTTPError as error:
+        headers = getattr(error, "headers", None) or {}
         response_body = error.read(4096).decode("utf-8", errors="replace").lower()
         if error.code == 404:
             raise RepositoryNotFoundError(
@@ -104,7 +109,7 @@ def _read_json(url, max_response_bytes):
         if error.code == 429 or (
             error.code == 403
             and (
-                error.headers.get("X-RateLimit-Remaining") == "0"
+                headers.get("X-RateLimit-Remaining") == "0"
                 or "rate limit" in response_body
             )
         ):
@@ -129,7 +134,10 @@ def _read_json(url, max_response_bytes):
 
 def _issue_terms(bug_description):
     """Create simple keywords to compare the issue with source-file paths."""
-    words = re.findall(r"[A-Za-z][A-Za-z0-9_]{2,}", (bug_description or "").lower())
+    words = re.findall(
+        r"[A-Za-z][A-Za-z0-9_]{2,}|(?<!\w)\d{3}(?!\w)",
+        (bug_description or "").lower(),
+    )
     return {word for word in words if word not in ISSUE_STOP_WORDS}
 
 
@@ -141,9 +149,14 @@ def _rank_source_file(entry, issue_terms):
     normalized_path = re.sub(r"[._/-]+", " ", path.lower())
     path_words = set(re.findall(r"[A-Za-z][A-Za-z0-9]{2,}", normalized_path))
     score = len(path_words & issue_terms) * 10
-    path_parts = path.lower().split("/")
-    if any(part in {"test", "tests", "spec", "specs"} for part in path_parts):
-        score += 2
+    path_parts = [part.lower() for part in path.split("/")]
+    file_name = path_parts[-1]
+    if any(part in {"test", "tests", "spec", "specs"} for part in path_parts[:-1]):
+        score -= 2
+    if file_name.startswith(("test_", "tests_", "spec_")) or file_name.endswith(
+        ("_test.py", "_tests.py", ".spec.js", ".spec.ts")
+    ):
+        score -= 2
     if len(path_parts) == 1:
         score += 1
     return score, -len(path_parts), path.lower()

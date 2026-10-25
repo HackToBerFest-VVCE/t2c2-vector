@@ -69,6 +69,30 @@ class GitHubRepositoryTests(unittest.TestCase):
         # One repository request, one tree request, and one selected-file request.
         self.assertEqual(mocked_urlopen.call_count, 3)
 
+    def test_prefers_application_files_over_test_files(self):
+        tree = {
+            "truncated": False,
+            "tree": [
+                {"path": "tests/test_payment.py", "type": "blob", "size": 20, "sha": "sha-test"},
+                {"path": "src/payment.py", "type": "blob", "size": 20, "sha": "sha-app"},
+            ],
+        }
+        responses = [
+            FakeResponse({"default_branch": "main"}),
+            FakeResponse(tree),
+            FakeResponse(blob_response("def process_payment(): pass\n")),
+            FakeResponse(blob_response("def test_payment(): pass\n")),
+        ]
+
+        with patch("github_repository.urlopen", side_effect=responses):
+            result = get_repository_sources(
+                "https://github.com/example/project",
+                "payment timeout crash",
+                max_files=1,
+            )
+
+        self.assertEqual(result["files"][0]["path"], "src/payment.py")
+
     def test_rejects_non_github_repository_urls(self):
         with self.assertRaises(UnsupportedRepositoryError):
             get_repository_sources("https://example.com/user/project")
