@@ -336,6 +336,15 @@ class FindMatchingEvidenceTests(unittest.TestCase):
 class AnalyzeEndpointTests(unittest.TestCase):
     def setUp(self):
         self.client = app_module.app.test_client()
+        self.explainer_patch = patch(
+            "app.explain_bug",
+            return_value=app_module.ExplanationResult(
+                available=False,
+                reason="disabled_in_test",
+            ),
+        )
+        self.explainer_patch.start()
+        self.addCleanup(self.explainer_patch.stop)
 
     def test_frontend_script_is_served_without_stale_cache(self):
         response = self.client.get("/script.js")
@@ -510,6 +519,68 @@ class AnalyzeEndpointTests(unittest.TestCase):
         self.assertIn("found 1 matching source line(s)", result["summary"])
         self.assertEqual(result["tests"]["status"], "NOT_RUN")
 
+    def test_accepted_gemini_explanation_updates_only_tentative_text(self):
+        files = [
+            make_source_file("src/payment.py", "payment timeout is retried\n")
+        ]
+        explanation = (
+            "The retry handling may be related to the reported timeout; "
+            "check whether the retry path matches the failing case."
+        )
+
+        with patch(
+            "app.explain_bug",
+            return_value=app_module.ExplanationResult(
+                available=True,
+                explanation=explanation,
+            ),
+        ) as mocked_explainer:
+            response = self.analyze("payment timeout", files)
+
+        self.assertEqual(response.status_code, 200)
+        result = response.get_json()
+        self.assert_analysis_schema(result)
+        self.assertEqual(
+            result["beginner_explanation"]["what_might_be_wrong"],
+            explanation,
+        )
+        self.assertTrue(result["gemini_used"])
+        self.assertIn("not a confirmed root cause", result["root_cause"])
+        self.assertEqual(result["tests"]["status"], "NOT_RUN")
+        mocked_explainer.assert_called_once()
+        call_description, call_evidence = mocked_explainer.call_args.args
+        self.assertEqual(call_description, "payment timeout")
+        self.assertEqual(len(call_evidence), 1)
+        self.assertIn("src/payment.py:1: [match:", call_evidence[0])
+
+    def test_unavailable_gemini_keeps_deterministic_explanation(self):
+        files = [
+            make_source_file("src/payment.py", "payment timeout is retried\n")
+        ]
+
+        with patch(
+            "app.explain_bug",
+            return_value=app_module.ExplanationResult(
+                available=False,
+                reason="provider_unavailable",
+            ),
+        ):
+            response = self.analyze("payment timeout", files)
+
+        self.assertEqual(response.status_code, 200)
+        result = response.get_json()
+        self.assertEqual(
+            result["beginner_explanation"]["what_might_be_wrong"],
+            "The retrieved source line at src/payment.py:1 reads: "
+            "\"payment timeout is retried\". It contains the reported term(s) payment, "
+            "timeout, making it a concrete location to inspect. A text match alone "
+            "does not show runtime behavior or confirm a root cause.",
+        )
+        self.assertIn("src/payment.py:1", result["beginner_explanation"]["why_evidence_matters"])
+        self.assertFalse(result["gemini_used"])
+        self.assertIn("not a confirmed root cause", result["root_cause"])
+        self.assertEqual(result["tests"]["status"], "NOT_RUN")
+
     def test_github_retrieval_errors_return_expected_http_status(self):
         errors = (
             (app_module.RepositoryNotFoundError, 404),
@@ -551,6 +622,7 @@ class AnalyzeEndpointTests(unittest.TestCase):
                 "message",
                 "summary",
                 "root_cause",
+                "gemini_used",
                 "evidence",
                 "suggested_fix",
                 "suggested_tests",
@@ -752,7 +824,8 @@ class AnalyzeEndpointTests(unittest.TestCase):
         self.assertIn("cannot explain", explanation["what_code_does"])
         self.assertIn("not proof", explanation["why_evidence_matters"])
         self.assertIn(
-            "does not prove", result["beginner_explanation"]["what_might_be_wrong"]
+            "does not show runtime behavior",
+            result["beginner_explanation"]["what_might_be_wrong"],
         )
 
     def test_max_content_length_and_http_413_provide_specific_evidence(self):
@@ -793,7 +866,10 @@ class AnalyzeEndpointTests(unittest.TestCase):
         )
         explanation = result["beginner_explanation"]
         self.assertIn("request body length", explanation["what_code_does"])
-        self.assertIn("may be related", explanation["what_might_be_wrong"])
+        self.assertIn("may be relevant", explanation["what_might_be_wrong"])
+        self.assertIn("src/request_limits.py:1", explanation["what_might_be_wrong"])
+        self.assertIn("does not show the runtime response", explanation["what_might_be_wrong"])
+        self.assertIn("confirm a root cause", explanation["what_might_be_wrong"])
         self.assertIn("MAX_CONTENT_LENGTH", explanation["what_to_check_next"][0])
         self.assertTrue(
             all(term["meaning"] for term in explanation["technical_terms"])
@@ -909,6 +985,10 @@ class AnalyzeEndpointTests(unittest.TestCase):
         self.assertIn("request-size limit", suggestion["title"])
         self.assertIn("source documentation", suggestion["action"])
         self.assertIn("expected behavior", suggestion["expected_result"])
+        explanation = result["beginner_explanation"]
+        self.assertIn("documentation at src/flask/wrappers.py:61", explanation["what_might_be_wrong"])
+        self.assertIn("documented behavior", explanation["what_might_be_wrong"])
+        self.assertIn("not proof", explanation["what_might_be_wrong"])
         self.assertNotIn("JSON", suggestion["expected_result"])
         self.assertEqual(result["tests"]["status"], "NOT_RUN")
 

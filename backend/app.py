@@ -5,6 +5,7 @@ import re
 from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, request, send_from_directory
+from ai_explainer import ExplanationResult, explain_bug
 from github_repository import (
     GitHubNetworkError,
     GitHubRateLimitError,
@@ -535,11 +536,20 @@ def analyze():
                 )
             ),
             "what_might_be_wrong": (
-                "If the problem involves a large request, this check may be related. "
-                "It does not confirm the cause."
+                (
+                    "The retrieved code at {}:{} compares request length with "
+                    "MAX_CONTENT_LENGTH, so it may be relevant if the report concerns "
+                    "oversized requests. This source match does not show the runtime "
+                    "response or confirm a root cause."
+                    if request_size_evidence["kind"] == "comparison"
+                    else "The retrieved documentation at {}:{} describes HTTP 413 "
+                    "for oversized requests. That is documented behavior, not proof "
+                    "that this caused the reported issue."
+                ).format(strongest_match["path"], request_size_evidence["line"])
             ),
             "why_evidence_matters": (
-                "The relevant source is at {}:{}; nearby lines provide context.".format(
+                "The relevant {} is at {}:{}; nearby lines provide context.".format(
+                    "code" if request_size_evidence["kind"] == "comparison" else "documentation",
                     strongest_match["path"], request_size_evidence["line"]
                 )
             ),
@@ -574,10 +584,18 @@ def analyze():
                 ),
             ),
             "what_might_be_wrong": (
-                "This line may be related to the report, but it does not prove the cause."
+                "The retrieved source line at {}:{} reads: \"{}\". It contains the "
+                "reported term(s) {}, making it a concrete location to inspect. "
+                "A text match alone does not show runtime behavior or confirm a root cause."
+            ).format(
+                strongest_match["path"],
+                strongest_match["line"],
+                strongest_match["source_line"].strip(),
+                ", ".join(strongest_match["line_keywords"]),
             ),
             "why_evidence_matters": (
-                "It points to {}:{} for inspection, but a keyword match is a clue, not proof."
+                "This matching line is in {}:{}; the retrieved text is a clue to inspect, "
+                "not proof that the reported behavior occurs there."
             ).format(strongest_match["path"], strongest_match["line"]),
             "what_to_check_next": [
                 "Read the matched line and nearby code.",
@@ -649,6 +667,22 @@ def analyze():
             "Record the response and check it against the endpoint's documented behavior."
         )
 
+    matching_snippets = [
+        item
+        for item in matching_evidence
+        if re.match(r"^[^:\r\n]+:\d+: \[match(?:[:\]])", item)
+    ]
+    ai_result = explain_bug(bug_description, matching_snippets)
+    gemini_used = False
+    if (
+        isinstance(ai_result, ExplanationResult)
+        and ai_result.available
+        and isinstance(ai_result.explanation, str)
+        and ai_result.explanation.strip()
+    ):
+        gemini_used = True
+        beginner_explanation["what_might_be_wrong"] = ai_result.explanation.strip()
+
     # Report keyword matches as clues, not as a proven cause or a completed test.
     return jsonify({
         "mode": "INVESTIGATION",
@@ -667,6 +701,7 @@ def analyze():
             )
         ),
         "root_cause": root_cause,
+        "gemini_used": gemini_used,
         "evidence": evidence,
         "suggested_fix": suggested_fix,
         "suggested_tests": suggested_tests,
