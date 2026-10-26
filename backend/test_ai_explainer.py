@@ -21,6 +21,8 @@ class GeminiExplainerTests(unittest.TestCase):
         fake_types = SimpleNamespace(
             HttpOptions=Mock(),
             HttpRetryOptions=Mock(),
+            ThinkingConfig=Mock(side_effect=lambda **kwargs: kwargs),
+            ThinkingLevel=SimpleNamespace(MINIMAL="MINIMAL"),
             GenerateContentConfig=Mock(side_effect=lambda **kwargs: kwargs),
         )
         fake_genai = SimpleNamespace(Client=Mock(return_value=client))
@@ -54,7 +56,7 @@ class GeminiExplainerTests(unittest.TestCase):
         self.assertIn("finish_reason=STOP", captured.output[0])
         prompt = client.models.generate_content.call_args.kwargs["contents"]
         self.assertIn("matching evidence may relate and state uncertainty", prompt)
-        self.assertIn("one focused, complete paragraph of about 80–120 words", prompt)
+        self.assertIn("one focused, complete paragraph of about 40–60 words", prompt)
         self.assertIn("Start exactly with 'The reported issue is that'", prompt)
         self.assertIn("Do not include steps, lists, headings, code", prompt)
         client.models.generate_content.assert_called_once()
@@ -152,7 +154,11 @@ class GeminiExplainerTests(unittest.TestCase):
         self.assertEqual(result.reason, "incomplete_response")
         self.assertIn("finish_reason=MAX_TOKENS", captured.output[0])
         config = client.models.generate_content.call_args.kwargs["config"]
-        self.assertEqual(config["max_output_tokens"], 800)
+        self.assertEqual(config["max_output_tokens"], 256)
+        self.assertEqual(
+            config["thinking_config"],
+            {"thinking_level": "MINIMAL"},
+        )
 
     def test_oversized_response_is_rejected_instead_of_clipped(self):
         response = SimpleNamespace(
