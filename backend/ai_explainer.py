@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import time
 from typing import Iterable
 
 from flask import current_app, has_app_context
@@ -26,9 +27,12 @@ except ImportError:
 
 
 MODEL_NAME = "gemini-3.6-flash"
-REQUEST_TIMEOUT_MS = 15_000
+DEFAULT_REQUEST_TIMEOUT_MS = 6_000
+MIN_REQUEST_TIMEOUT_MS = 1_000
+MAX_REQUEST_TIMEOUT_MS = 30_000
+RETRYABLE_HTTP_STATUS_CODES = [408, 500, 502, 503, 504]
 MAX_DESCRIPTION_CHARS = 1_200
-MAX_EVIDENCE_SNIPPETS = 3
+MAX_EVIDENCE_SNIPPETS = 2
 MAX_EVIDENCE_CANDIDATES = 20
 MAX_SNIPPET_CHARS = 800
 MAX_EXPLANATION_CHARS = 3_000
@@ -94,6 +98,35 @@ def _log_diagnostic(
         http_status if http_status is not None else "none",
         finish_reason,
     )
+
+
+def _log_generation_duration(started_at: float) -> None:
+    """Log elapsed Gemini generation time without request or provider data."""
+    logger = current_app.logger if has_app_context() else _LOGGER
+    logger.info(
+        "Analysis timing: stage=gemini_generation duration_ms=%.1f",
+        (time.perf_counter() - started_at) * 1000,
+    )
+
+
+def _request_timeout_ms() -> int:
+    """Read and validate the configurable Gemini request timeout."""
+    configured_timeout = os.environ.get("REPOBRIDGE_GEMINI_TIMEOUT_MS")
+    if configured_timeout is None:
+        return DEFAULT_REQUEST_TIMEOUT_MS
+
+    try:
+        timeout_ms = int(configured_timeout)
+    except ValueError:
+        timeout_ms = 0
+
+    if not MIN_REQUEST_TIMEOUT_MS <= timeout_ms <= MAX_REQUEST_TIMEOUT_MS:
+        logger = current_app.logger if has_app_context() else _LOGGER
+        logger.warning(
+            "Invalid REPOBRIDGE_GEMINI_TIMEOUT_MS; using the default timeout."
+        )
+        return DEFAULT_REQUEST_TIMEOUT_MS
+    return timeout_ms
 
 
 def _category_for_status_code(status_code: int) -> str:
@@ -203,6 +236,7 @@ def _select_evidence(evidence_snippets: Iterable[str]):
 
     selected = []
     locations = set()
+    seen_locations = set()
     for candidate_number, snippet in enumerate(candidates):
         if candidate_number >= MAX_EVIDENCE_CANDIDATES:
             break
@@ -217,8 +251,12 @@ def _select_evidence(evidence_snippets: Iterable[str]):
         if line_number < 1:
             continue
 
+        source_location = (source_path, line_number)
+        if source_location in seen_locations:
+            continue
+        seen_locations.add(source_location)
         selected.append(snippet[:MAX_SNIPPET_CHARS])
-        locations.add((source_path, line_number))
+        locations.add(source_location)
         if len(selected) == MAX_EVIDENCE_SNIPPETS:
             break
 
@@ -355,23 +393,34 @@ def explain_bug(bug_description, evidence_snippets):
             genai.Client(
                 api_key=api_key,
                 http_options=types.HttpOptions(
-                    timeout=REQUEST_TIMEOUT_MS,
-                    retry_options=types.HttpRetryOptions(attempts=1),
+                    timeout=_request_timeout_ms(),
+                    retry_options=types.HttpRetryOptions(
+                        attempts=2,
+                        initial_delay=0.25,
+                        max_delay=0.5,
+                        exp_base=2,
+                        jitter=0.1,
+                        http_status_codes=RETRYABLE_HTTP_STATUS_CODES,
+                    ),
                 ),
             )
         ) as client:
             gemini_attempted = True
-            response = client.models.generate_content(
-                model=MODEL_NAME,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.2,
-                    max_output_tokens=256,
-                    thinking_config=types.ThinkingConfig(
-                        thinking_level=types.ThinkingLevel.MINIMAL,
+            generation_started_at = time.perf_counter()
+            try:
+                response = client.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.2,
+                        max_output_tokens=256,
+                        thinking_config=types.ThinkingConfig(
+                            thinking_level=types.ThinkingLevel.MINIMAL,
+                        ),
                     ),
-                ),
-            )
+                )
+            finally:
+                _log_generation_duration(generation_started_at)
             finish_reason = _normalized_finish_reason(response)
             if not _response_finished_normally(finish_reason):
                 _log_diagnostic(

@@ -74,6 +74,16 @@ function isObjectRecord(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function isValidWorkflow(workflow) {
+    return (
+        isObjectRecord(workflow) &&
+        ["SUCCEEDED", "FAILED"].includes(workflow.source_retrieval) &&
+        ["LEAD_FOUND", "NO_MATCH", "NOT_RUN"].includes(workflow.evidence_search) &&
+        ["READY_FOR_REVIEW", "NOT_READY"].includes(workflow.report) &&
+        workflow.verification === "NOT_RUN"
+    );
+}
+
 function isValidAnalysisReport(report) {
     if (
         !isObjectRecord(report) ||
@@ -96,6 +106,11 @@ function isValidAnalysisReport(report) {
                 (!Array.isArray(explanation.technical_terms) ||
                     !explanation.technical_terms.every(isObjectRecord))))
     ) {
+        return false;
+    }
+
+    const workflow = report.workflow;
+    if (workflow != null && !isValidWorkflow(workflow)) {
         return false;
     }
 
@@ -127,6 +142,47 @@ const issueInput = document.getElementById("issue");
 const analyzeBtn = document.getElementById("analyzeBtn");
 const status = document.getElementById("status");
 const results = document.getElementById("results");
+const workflowNodes = {
+    source_retrieval: document.getElementById("workflow-retrieval"),
+    evidence_search: document.getElementById("workflow-evidence"),
+    report: document.getElementById("workflow-report"),
+    verification: document.getElementById("workflow-verification"),
+};
+
+function updateWorkflow(states) {
+    Object.entries(workflowNodes).forEach(([key, node]) => {
+        if (node) {
+            node.textContent = states[key];
+        }
+    });
+}
+
+function displayWorkflow(workflow) {
+    if (!isValidWorkflow(workflow)) {
+        updateWorkflow({
+            source_retrieval: "Unknown",
+            evidence_search: "Unknown",
+            report: "Unknown",
+            verification: "Unknown",
+        });
+        return;
+    }
+
+    updateWorkflow({
+        source_retrieval: workflow.source_retrieval === "SUCCEEDED"
+            ? "Succeeded"
+            : "Failed",
+        evidence_search: {
+            LEAD_FOUND: "Possible lead found",
+            NO_MATCH: "No matching evidence",
+            NOT_RUN: "Not run",
+        }[workflow.evidence_search],
+        report: workflow.report === "READY_FOR_REVIEW"
+            ? "Ready for review"
+            : "Not ready",
+        verification: "NOT RUN",
+    });
+}
 
 // Run this function whenever the user clicks the Analyze Bug button.
 analyzeBtn.addEventListener("click", async () => {
@@ -136,6 +192,12 @@ analyzeBtn.addEventListener("click", async () => {
 
     // Clear the previous report before validating or starting a new request.
     results.replaceChildren();
+    updateWorkflow({
+        source_retrieval: "Not started",
+        evidence_search: "Not run",
+        report: "Not ready",
+        verification: "NOT RUN",
+    });
 
     // Read the user's inputs and remove unnecessary spaces.
     const repo = repoInput.value.trim();
@@ -158,7 +220,14 @@ analyzeBtn.addEventListener("click", async () => {
     }
 
     analyzeBtn.disabled = true;
-    status.textContent = "Analyzing repository...";
+    status.textContent =
+        "Retrieving source files and preparing the analysis report. This may take a moment.";
+    updateWorkflow({
+        source_retrieval: "In progress",
+        evidence_search: "Waiting",
+        report: "Waiting",
+        verification: "NOT RUN",
+    });
 
     try {
         let response;
@@ -174,6 +243,12 @@ analyzeBtn.addEventListener("click", async () => {
                 })
             });
         } catch {
+            updateWorkflow({
+                source_retrieval: "Unavailable",
+                evidence_search: "Not run",
+                report: "Not ready",
+                verification: "NOT RUN",
+            });
             status.textContent =
                 "Unable to reach the backend. Check your connection and try again.";
             return;
@@ -183,6 +258,12 @@ analyzeBtn.addEventListener("click", async () => {
         try {
             report = await response.json();
         } catch {
+            updateWorkflow({
+                source_retrieval: "Unknown",
+                evidence_search: "Unknown",
+                report: "Not ready",
+                verification: "NOT RUN",
+            });
             status.textContent = response.ok
                 ? "The backend returned invalid JSON."
                 : `Request failed with HTTP ${response.status}; the response was not valid JSON.`;
@@ -190,6 +271,15 @@ analyzeBtn.addEventListener("click", async () => {
         }
 
         if (!response.ok) {
+            displayWorkflow(report?.workflow);
+            if (!isValidWorkflow(report?.workflow)) {
+                updateWorkflow({
+                    source_retrieval: "Unknown",
+                    evidence_search: "Not run",
+                    report: "Not ready",
+                    verification: "NOT RUN",
+                });
+            }
             const detail =
                 report && typeof report.message === "string"
                     ? `: ${displayReportText(report.message)}`
@@ -202,6 +292,12 @@ analyzeBtn.addEventListener("click", async () => {
         }
 
         if (!isValidAnalysisReport(report)) {
+            updateWorkflow({
+                source_retrieval: "Unknown",
+                evidence_search: "Unknown",
+                report: "Not ready",
+                verification: "NOT RUN",
+            });
             status.textContent =
                 "The backend returned an incomplete or unexpected analysis report.";
             return;
@@ -312,6 +408,7 @@ analyzeBtn.addEventListener("click", async () => {
             aiReviewSection.append(steps);
         }
         const evidenceSection = addSection("Source Code Evidence");
+        addText(evidenceSection, "Assessment", report.root_cause);
         addText(
             evidenceSection,
             "Why this clue matters",
@@ -342,13 +439,26 @@ analyzeBtn.addEventListener("click", async () => {
                 const title = document.createElement("h4");
                 title.textContent = displayProse(suggestion.title || "Suggested scenario");
                 suggestionItem.append(title);
-                [
-                    ["Setup", suggestion.setup],
-                    ["Action", suggestion.action],
-                    ["Expected result", suggestion.expected_result],
-                ].forEach(([label, value]) => {
-                    addText(suggestionItem, label, value);
-                });
+                addText(
+                    suggestionItem,
+                    "Purpose",
+                    suggestion.purpose || suggestion.title
+                );
+                addText(
+                    suggestionItem,
+                    "Steps",
+                    [suggestion.setup, suggestion.action]
+                        .filter((value) => typeof value === "string" && value.trim())
+                        .map(displayProse)
+                        .join(" ")
+                );
+                addText(suggestionItem, "Expected result", suggestion.expected_result);
+                addText(
+                    suggestionItem,
+                    "What to check",
+                    suggestion.what_to_check ||
+                        "Compare the observed behavior with the expected result."
+                );
 
                 const evidenceBasis = suggestion.evidence_basis;
                 const hasEvidenceLocation =
@@ -377,6 +487,7 @@ analyzeBtn.addEventListener("click", async () => {
         addText(testStatusSection, "Status", testStatus);
         addText(testStatusSection, "Details", report.tests?.details);
 
+        displayWorkflow(report.workflow);
         status.textContent =
             report.mode === "DEMO"
                 ? "Demo response received; no repository analysis or tests were performed."

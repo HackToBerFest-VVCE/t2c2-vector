@@ -1,10 +1,10 @@
 
 from pathlib import Path
-from flask import Flask, jsonify, send_from_directory
 import re
+import time
 from urllib.parse import urlsplit
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, g, jsonify, request, send_from_directory
 from ai_explainer import ExplanationResult, explain_bug
 from github_repository import (
     GitHubNetworkError,
@@ -22,9 +22,79 @@ app = Flask(__name__)
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 NON_DIAGNOSTIC_WORDS = {
     "doesn", "during", "not", "response", "responses", "return", "returned",
-    "returning", "returns", "something", "work", "working",
+    "returning", "returns", "something", "work", "working", "works", "show",
+    "anything", "blank", "display", "displaying", "everything", "nothing",
+    "page", "showing",
 }
 MIN_EVIDENCE_KEYWORDS_PER_LINE = 2
+MATCH_WORD_VARIATIONS = {
+    "failed": "fail",
+    "failing": "fail",
+    "fails": "fail",
+    "crashed": "crash",
+    "crashes": "crash",
+    "connecting": "connect",
+    "connected": "connect",
+    "connections": "connect",
+    "timeouts": "timeout",
+    "showing": "show",
+    "shown": "show",
+    "shows": "show",
+    "displayed": "display",
+    "displays": "display",
+    "rendered": "render",
+    "rendering": "render",
+    "loading": "load",
+    "loaded": "load",
+}
+
+
+@app.before_request
+def start_analysis_timer():
+    if request.endpoint == "analyze":
+        g.analysis_started_at = time.perf_counter()
+
+
+@app.after_request
+def log_analysis_duration(response):
+    started_at = getattr(g, "analysis_started_at", None)
+    if started_at is not None:
+        app.logger.info(
+            "Analysis timing: stage=total duration_ms=%.1f status=%d",
+            (time.perf_counter() - started_at) * 1000,
+            response.status_code,
+        )
+    return response
+
+
+def _log_stage_duration(stage, started_at):
+    app.logger.info(
+        "Analysis timing: stage=%s duration_ms=%.1f",
+        stage,
+        (time.perf_counter() - started_at) * 1000,
+    )
+
+
+def _normalize_match_word(word):
+    """Normalize common source/report word variations without external NLP."""
+    normalized = word.lower()
+    if normalized in MATCH_WORD_VARIATIONS:
+        return MATCH_WORD_VARIATIONS[normalized]
+    if len(normalized) > 4 and normalized.endswith("ies"):
+        return normalized[:-3] + "y"
+    return normalized
+
+
+def _retrieval_failure_response(error, status_code):
+    return jsonify({
+        "error": str(error),
+        "workflow": {
+            "source_retrieval": "FAILED",
+            "evidence_search": "NOT_RUN",
+            "report": "NOT_READY",
+            "verification": "NOT_RUN",
+        },
+    }), status_code
 
 
 @app.route("/")
@@ -68,10 +138,11 @@ def find_matching_evidence(files, bug_description, max_matches=10):
         bug_description,
     )
     keywords = {
-        word.lower()
+        _normalize_match_word(word)
         for word in description_words
         if word.lower() not in ISSUE_STOP_WORDS
         and word.lower() not in NON_DIAGNOSTIC_WORDS
+        and _normalize_match_word(word) not in NON_DIAGNOSTIC_WORDS
     }
     # Keep this technical phrase useful without treating either word as a
     # meaningful standalone keyword.
@@ -97,7 +168,7 @@ def find_matching_evidence(files, bug_description, max_matches=10):
         for word in keywords
     }
     technical_terms = {
-        word.lower()
+        _normalize_match_word(word)
         for word in re.findall(
             r"\b[A-Z][A-Z0-9_]{2,}\b|"
             r"\b[A-Z][a-z]+(?:[A-Z][A-Za-z0-9]*)+\b|"
@@ -118,11 +189,23 @@ def find_matching_evidence(files, bug_description, max_matches=10):
             or file_name.endswith(("_test.py", "_tests.py", ".spec.js", ".spec.ts"))
         )
 
+        normalized_source_lines = [
+            " ".join(
+                _normalize_match_word(word)
+                for word in re.findall(
+                    r"[A-Za-z][A-Za-z0-9_]{2,}|(?<!\w)\d{3}(?!\w)",
+                    line,
+                )
+            )
+            for line in source_lines
+        ]
         line_keywords = [
             {
-                word for word, pattern in keyword_patterns.items() if pattern.search(line)
+                word
+                for word, pattern in keyword_patterns.items()
+                if pattern.search(normalized_line)
             }
-            for line in source_lines
+            for normalized_line in normalized_source_lines
         ]
         qualified_lines = {}
         for line_index, matching_keywords in enumerate(line_keywords):
@@ -166,7 +249,7 @@ def find_matching_evidence(files, bug_description, max_matches=10):
             ranked_matches.append(
                 (
                     is_test_file,
-                    -len(own_keywords),
+                    -(len(own_keywords) * 3 + len(matching_keywords)),
                     path.lower(),
                     line_number,
                     evidence_text,
@@ -414,25 +497,32 @@ def analyze():
         }), 400
 
     # Retrieve source text only; the helper never executes repository code.
+    retrieval_started_at = time.perf_counter()
     try:
         retrieval = get_repository_sources(repo_url, bug_description)
     except RepositoryNotFoundError as error:
-        return jsonify({"error": str(error)}), 404
+        return _retrieval_failure_response(error, 404)
     except RepositoryAccessError as error:
-        return jsonify({"error": str(error)}), 403
+        return _retrieval_failure_response(error, 403)
     except GitHubRateLimitError as error:
-        return jsonify({"error": str(error)}), 429
+        return _retrieval_failure_response(error, 429)
     except GitHubNetworkError as error:
-        return jsonify({"error": str(error)}), 503
+        return _retrieval_failure_response(error, 503)
     except UnsupportedRepositoryError as error:
-        return jsonify({"error": str(error)}), 400
+        return _retrieval_failure_response(error, 400)
     except GitHubRetrievalError as error:
-        return jsonify({"error": str(error)}), 502
+        return _retrieval_failure_response(error, 502)
+    finally:
+        _log_stage_duration("repository_fetch", retrieval_started_at)
 
     # Search only the source text already retrieved; never execute it.
-    matching_evidence, matching_line_count, strongest_match = find_matching_evidence(
-        retrieval["files"], bug_description
-    )
+    matching_started_at = time.perf_counter()
+    try:
+        matching_evidence, matching_line_count, strongest_match = find_matching_evidence(
+            retrieval["files"], bug_description
+        )
+    finally:
+        _log_stage_duration("source_matching", matching_started_at)
     description_is_broad = (
         matching_line_count == 0
         and matching_evidence
@@ -456,6 +546,10 @@ def analyze():
     if has_request_size_branch:
         suggested_tests.append({
             "title": "Check behavior at the configured request-size limit",
+            "purpose": (
+                "Check whether the reported response is associated with the configured "
+                "request-size limit."
+            ),
             "setup": (
                 "Find the configured MAX_CONTENT_LENGTH value and prepare request bodies "
                 "just below, at, and above that limit."
@@ -467,8 +561,13 @@ def analyze():
             ),
             "expected_result": (
                 "Record the actual response for each size and compare its status and body "
-                "with the endpoint's documented or expected behavior."
+                "with the documented or expected behavior; treat any undocumented "
+                "expectation as an assumption to verify."
             ),
+            "what_to_check": (
+                "Record the response status and body for each size, then compare them "
+                "with the retrieved source at {}:{}."
+            ).format(strongest_match["path"], request_size_evidence["line"]),
             "evidence_basis": {
                 "path": strongest_match["path"],
                 "line": request_size_evidence["line"],
@@ -619,6 +718,12 @@ def analyze():
         "State what you expected and what happened instead.",
         "Include an error message, endpoint, or status code if one applies.",
     ]
+    if description_is_broad:
+        missing_information = [
+            "What exact steps did you take, and what did you expect to happen?",
+            "What happened instead? Include any error message or stack trace shown.",
+            "Name the affected page, feature, endpoint, or function if you know it.",
+        ]
     if (
         strongest_match is not None
         and not has_request_size_branch
@@ -702,6 +807,14 @@ def analyze():
         ),
         "root_cause": root_cause,
         "gemini_used": gemini_used,
+        "workflow": {
+            "source_retrieval": "SUCCEEDED",
+            "evidence_search": (
+                "LEAD_FOUND" if matching_line_count else "NO_MATCH"
+            ),
+            "report": "READY_FOR_REVIEW",
+            "verification": "NOT_RUN",
+        },
         "evidence": evidence,
         "suggested_fix": suggested_fix,
         "suggested_tests": suggested_tests,

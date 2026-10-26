@@ -71,7 +71,17 @@ function createFrontendHarness({
     }
 
     const elements = new Map(
-        ["repo", "issue", "analyzeBtn", "status", "results"].map((id) => [
+        [
+            "repo",
+            "issue",
+            "analyzeBtn",
+            "status",
+            "results",
+            "workflow-retrieval",
+            "workflow-evidence",
+            "workflow-report",
+            "workflow-verification",
+        ].map((id) => [
             id,
             new FakeNode(id),
         ])
@@ -168,8 +178,23 @@ test("validates required inputs and repository URLs before sending a request", a
             elements.get("status").textContent.includes(submission.expectedStatus),
             submission.repositoryUrl
         );
+        assert.equal(
+            elements.get("workflow-retrieval").textContent,
+            "Not started"
+        );
+        assert.equal(elements.get("workflow-verification").textContent, "NOT RUN");
         assert.equal(elements.get("analyzeBtn").disabled, false);
     }
+});
+
+test("form guidance asks for useful details and gives a concise example", () => {
+    const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+
+    assert.ok(html.includes("what action you took"));
+    assert.ok(html.includes("what you expected"));
+    assert.ok(html.includes("what happened instead"));
+    assert.ok(html.includes("error message or stack trace"));
+    assert.ok(html.includes("profile page stays blank"));
 });
 
 test("failed and incomplete analyses clear old reports and show readable errors", async () => {
@@ -179,6 +204,7 @@ test("failed and incomplete analyses clear old reports and show readable errors"
                 throw new Error("offline");
             },
             expectedStatus: "Unable to reach the backend",
+            expectedRetrieval: "Unavailable",
         },
         {
             fetchImplementation: async () => ({
@@ -186,9 +212,16 @@ test("failed and incomplete analyses clear old reports and show readable errors"
                 status: 404,
                 json: async () => ({
                     error: "Repository or file was not found.",
+                    workflow: {
+                        source_retrieval: "FAILED",
+                        evidence_search: "NOT_RUN",
+                        report: "NOT_READY",
+                        verification: "NOT_RUN",
+                    },
                 }),
             }),
             expectedStatus: "HTTP 404: Repository or file was not found.",
+            expectedRetrieval: "Failed",
         },
         {
             fetchImplementation: async () => ({
@@ -198,6 +231,7 @@ test("failed and incomplete analyses clear old reports and show readable errors"
                 },
             }),
             expectedStatus: "The backend returned invalid JSON.",
+            expectedRetrieval: "Unknown",
         },
         {
             fetchImplementation: async () => ({
@@ -205,6 +239,7 @@ test("failed and incomplete analyses clear old reports and show readable errors"
                 json: async () => ({mode: "INVESTIGATION"}),
             }),
             expectedStatus: "incomplete or unexpected analysis report",
+            expectedRetrieval: "Unknown",
         },
         {
             fetchImplementation: async () => ({
@@ -217,6 +252,7 @@ test("failed and incomplete analyses clear old reports and show readable errors"
                 }),
             }),
             expectedStatus: "incomplete or unexpected analysis report",
+            expectedRetrieval: "Unknown",
         },
     ];
 
@@ -229,6 +265,12 @@ test("failed and incomplete analyses clear old reports and show readable errors"
 
         assert.equal(results.textContent, "");
         assert.ok(elements.get("status").textContent.includes(failure.expectedStatus));
+        assert.equal(
+            elements.get("workflow-retrieval").textContent,
+            failure.expectedRetrieval
+        );
+        assert.equal(elements.get("workflow-report").textContent, "Not ready");
+        assert.equal(elements.get("workflow-verification").textContent, "NOT RUN");
         assert.equal(elements.get("analyzeBtn").disabled, false);
     }
 });
@@ -243,6 +285,10 @@ test("disables duplicate submissions while an analysis is pending", async () => 
     });
 
     const firstSubmission = elements.get("analyzeBtn").listeners.click();
+    assert.match(
+        elements.get("status").textContent,
+        /preparing the analysis report/
+    );
     await elements.get("analyzeBtn").listeners.click();
 
     assert.equal(fetchCalls.length, 1);
@@ -252,6 +298,12 @@ test("disables duplicate submissions while an analysis is pending", async () => 
         ok: true,
         json: async () => ({
             mode: "INVESTIGATION",
+            workflow: {
+                source_retrieval: "SUCCEEDED",
+                evidence_search: "LEAD_FOUND",
+                report: "READY_FOR_REVIEW",
+                verification: "NOT_RUN",
+            },
             summary: "No matching source lines were found.",
             evidence: [],
         }),
@@ -267,6 +319,7 @@ test("renders repository-derived content as text in the report", async () => {
     const report = {
         mode: "INVESTIGATION",
         gemini_used: true,
+        root_cause: "Possible lead (not a confirmed root cause): src/payment.py:12.",
         summary: "Retrieved source files and found one matching source line.",
         evidence: [
             `src/payment.py:12: [match] ${hostileText} &#x52;`,
@@ -299,13 +352,21 @@ test("renders repository-derived content as text in the report", async () => {
         suggested_tests: [
             {
                 title: "Check payment timeout behavior",
+                purpose: "Check how payment requests behave during a timeout.",
                 setup:
                     "&#x20;**&#x46;ind the configured request-size limit before sending the request.",
                 action: "Submit the request.",
                 expected_result: "Compare the observed result with expectations.",
+                what_to_check: "Record the returned status and response body.",
                 evidence_basis: {path: "src/payment.py", line: 12},
             },
         ],
+        workflow: {
+            source_retrieval: "SUCCEEDED",
+            evidence_search: "LEAD_FOUND",
+            report: "READY_FOR_REVIEW",
+            verification: "NOT_RUN",
+        },
         tests: {
             status: "&#x20;**&#x4E;OT_RUN",
             details: "No repository tests were run.",
@@ -354,10 +415,19 @@ test("renders repository-derived content as text in the report", async () => {
     assert.ok(
         allNodes.some((node) =>
             node.textContent.includes(
-                "Setup: Find the configured request-size limit before sending the request."
+                "Assessment: Possible lead (not a confirmed root cause): src/payment.py:12."
             )
         )
     );
+    assert.ok(
+        allNodes.some((node) =>
+            node.textContent.includes(
+                "Steps: Find the configured request-size limit before sending the request. Submit the request."
+            )
+        )
+    );
+    assert.ok(allNodes.some((node) => node.textContent.includes("Purpose: Check how payment requests behave during a timeout.")));
+    assert.ok(allNodes.some((node) => node.textContent.includes("What to check: Record the returned status and response body.")));
     assert.ok(
         allNodes.some((node) =>
             node.textContent.includes(
@@ -391,6 +461,10 @@ test("renders repository-derived content as text in the report", async () => {
     assert.ok(allNodes.some((node) => node.textContent.includes("Suggested tests")));
     assert.ok(allNodes.some((node) => node.textContent.includes("Test execution status")));
     assert.ok(allNodes.some((node) => node.textContent.includes("NOT_RUN")));
+    assert.equal(elements.get("workflow-retrieval").textContent, "Succeeded");
+    assert.equal(elements.get("workflow-evidence").textContent, "Possible lead found");
+    assert.equal(elements.get("workflow-report").textContent, "Ready for review");
+    assert.equal(elements.get("workflow-verification").textContent, "NOT RUN");
     assert.equal(allNodes.some((node) => node.tagName === "img"), false);
     assert.equal(/\.innerHTML\s*=/.test(source), false);
     assert.deepEqual(
@@ -418,6 +492,12 @@ test("labels a deterministic explanation as fallback, not Gemini output", async 
     const report = {
         mode: "INVESTIGATION",
         gemini_used: false,
+        workflow: {
+            source_retrieval: "SUCCEEDED",
+            evidence_search: "NO_MATCH",
+            report: "READY_FOR_REVIEW",
+            verification: "NOT_RUN",
+        },
         summary: "No matching source lines were found.",
         evidence: ["src/payment.py:12: [context, not counted as evidence] timeout handler"],
         beginner_explanation: {
@@ -470,4 +550,6 @@ test("labels a deterministic explanation as fallback, not Gemini output", async 
         )
     );
     assert.ok(allNodes.some((node) => node.textContent.includes("Status: NOT_RUN")));
+    assert.equal(elements.get("workflow-evidence").textContent, "No matching evidence");
+    assert.equal(elements.get("workflow-report").textContent, "Ready for review");
 });

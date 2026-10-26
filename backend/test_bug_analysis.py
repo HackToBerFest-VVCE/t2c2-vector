@@ -123,6 +123,46 @@ class FindMatchingEvidenceTests(unittest.TestCase):
         self.assertEqual(strongest_match["keywords"], ["payment", "timeout"])
         self.assertTrue(any(item.startswith("src/payment.py:2:") for item in evidence))
 
+    def test_common_word_variations_match_case_insensitively(self):
+        files = [
+            make_source_file(
+                "src/payment.py",
+                "Payment, connecting fails during checkout.\n",
+            )
+        ]
+
+        evidence, match_count, strongest_match = app_module.find_matching_evidence(
+            files,
+            "PAYMENT connections keep failing",
+        )
+
+        self.assertEqual(match_count, 1)
+        self.assertEqual(strongest_match["path"], "src/payment.py")
+        self.assertEqual(strongest_match["line"], 1)
+        self.assertEqual(strongest_match["line_keywords"], ["connect", "fail", "payment"])
+        self.assertTrue(any("src/payment.py:1:" in item for item in evidence))
+
+    def test_direct_multi_term_match_ranks_above_nearby_technical_match(self):
+        files = [
+            make_source_file(
+                "src/nearby.py",
+                "payment handler starts\nunrelated line\nHTTP 500 response\n",
+            ),
+            make_source_file(
+                "src/direct.py",
+                "payment timeout returned HTTP 500\n",
+            ),
+        ]
+
+        _evidence, match_count, strongest_match = app_module.find_matching_evidence(
+            files,
+            "payment timeout HTTP 500",
+        )
+
+        self.assertGreaterEqual(match_count, 2)
+        self.assertEqual(strongest_match["path"], "src/direct.py")
+        self.assertEqual(strongest_match["line"], 1)
+
     def test_single_keyword_overlaps_are_not_reported_as_useful_evidence(self):
         files = [
             make_source_file(
@@ -519,6 +559,25 @@ class AnalyzeEndpointTests(unittest.TestCase):
         self.assertIn("found 1 matching source line(s)", result["summary"])
         self.assertEqual(result["tests"]["status"], "NOT_RUN")
 
+    def test_analysis_logs_safe_stage_durations(self):
+        files = [
+            make_source_file(
+                "src/payment.py",
+                "initialize payment handler\npayment timeout occurs\n",
+            )
+        ]
+
+        with self.assertLogs(app_module.app.logger, level="INFO") as captured:
+            response = self.analyze("private-description payment timeout", files)
+
+        self.assertEqual(response.status_code, 200)
+        log_output = "\n".join(captured.output)
+        for stage in ("repository_fetch", "source_matching", "total"):
+            self.assertIn("stage={}".format(stage), log_output)
+        self.assertIn("duration_ms=", log_output)
+        self.assertNotIn("private-description", log_output)
+        self.assertNotIn("example/project", log_output)
+
     def test_accepted_gemini_explanation_updates_only_tentative_text(self):
         files = [
             make_source_file("src/payment.py", "payment timeout is retried\n")
@@ -607,7 +666,16 @@ class AnalyzeEndpointTests(unittest.TestCase):
 
                 self.assertEqual(response.status_code, expected_status)
                 self.assertEqual(
-                    response.get_json(), {"error": "retrieval failed"}
+                    response.get_json(),
+                    {
+                        "error": "retrieval failed",
+                        "workflow": {
+                            "source_retrieval": "FAILED",
+                            "evidence_search": "NOT_RUN",
+                            "report": "NOT_READY",
+                            "verification": "NOT_RUN",
+                        },
+                    },
                 )
                 mocked_retrieval.assert_called_once_with(
                     "https://github.com/example/project", "payment timeout"
@@ -623,6 +691,7 @@ class AnalyzeEndpointTests(unittest.TestCase):
                 "summary",
                 "root_cause",
                 "gemini_used",
+                "workflow",
                 "evidence",
                 "suggested_fix",
                 "suggested_tests",
@@ -638,6 +707,16 @@ class AnalyzeEndpointTests(unittest.TestCase):
                 "details": "No repository tests were run.",
             },
         )
+        self.assertEqual(
+            result["workflow"],
+            {
+                "source_retrieval": "SUCCEEDED",
+                "evidence_search": result["workflow"]["evidence_search"],
+                "report": "READY_FOR_REVIEW",
+                "verification": "NOT_RUN",
+            },
+        )
+        self.assertIn(result["workflow"]["evidence_search"], {"LEAD_FOUND", "NO_MATCH"})
         self.assertEqual(
             set(result["beginner_explanation"]),
             {
@@ -687,6 +766,9 @@ class AnalyzeEndpointTests(unittest.TestCase):
             "The application is not working.",
             "Something is broken.",
             "It doesn't work.",
+            "Nothing is working.",
+            "The page is broken.",
+            "It is not showing anything.",
         ):
             with self.subTest(description=description):
                 response = self.analyze(description, files)
@@ -704,11 +786,14 @@ class AnalyzeEndpointTests(unittest.TestCase):
                     any("[keyword(s):" in item for item in result["evidence"])
                 )
                 self.assertEqual(result["suggested_tests"], [])
+                self.assertEqual(result["workflow"]["evidence_search"], "NO_MATCH")
                 self.assertEqual(result["tests"]["status"], "NOT_RUN")
                 self.assertIn(
                     "not enough matching evidence",
                     result["beginner_explanation"]["what_might_be_wrong"],
                 )
+                self.assertIn("What exact steps did you take", result["investigation_guide"]["missing_information"][0])
+                self.assertIn("error message or stack trace", result["investigation_guide"]["missing_information"][1])
                 self.assertIn("No relevant source line", result["investigation_guide"]["steps"][2]["instruction"])
 
     def test_concrete_technical_details_are_not_classified_as_broad(self):
@@ -743,6 +828,7 @@ class AnalyzeEndpointTests(unittest.TestCase):
         self.assertIn("Insufficient evidence", result["root_cause"])
         self.assertIn("No fix can be suggested", result["suggested_fix"])
         self.assertEqual(result["suggested_tests"], [])
+        self.assertEqual(result["workflow"]["evidence_search"], "NO_MATCH")
         self.assertEqual(result["tests"]["status"], "NOT_RUN")
 
     def test_single_word_overlap_does_not_create_possible_root_cause(self):
@@ -817,6 +903,9 @@ class AnalyzeEndpointTests(unittest.TestCase):
             any("src/payment.py:2:" in item for item in result["evidence"])
         )
         self.assertIn("not a confirmed root cause", result["root_cause"])
+        self.assertEqual(result["workflow"]["evidence_search"], "LEAD_FOUND")
+        self.assertEqual(result["workflow"]["report"], "READY_FOR_REVIEW")
+        self.assertEqual(result["workflow"]["verification"], "NOT_RUN")
         self.assertIn("No specific code change is confirmed", result["suggested_fix"])
         self.assertEqual(result["suggested_tests"], [])
         self.assertEqual(result["tests"]["status"], "NOT_RUN")
@@ -853,8 +942,14 @@ class AnalyzeEndpointTests(unittest.TestCase):
         suggestion = result["suggested_tests"][0]
         self.assertEqual(
             set(suggestion),
-            {"title", "setup", "action", "expected_result", "evidence_basis"},
+            {
+                "title", "purpose", "setup", "action", "expected_result",
+                "what_to_check", "evidence_basis",
+            },
         )
+        self.assertTrue(suggestion["purpose"])
+        self.assertIn("status and body", suggestion["what_to_check"])
+        self.assertIn("assumption to verify", suggestion["expected_result"])
         self.assertTrue(suggestion["title"])
         self.assertIn("MAX_CONTENT_LENGTH", suggestion["setup"])
         self.assertIn("request-size check", suggestion["action"])
@@ -904,7 +999,10 @@ class AnalyzeEndpointTests(unittest.TestCase):
         suggestion = result["suggested_tests"][0]
         self.assertEqual(
             set(suggestion),
-            {"title", "setup", "action", "expected_result", "evidence_basis"},
+            {
+                "title", "purpose", "setup", "action", "expected_result",
+                "what_to_check", "evidence_basis",
+            },
         )
         self.assertTrue(suggestion["title"])
         self.assertIn("MAX_CONTENT_LENGTH", suggestion["setup"])
@@ -940,7 +1038,10 @@ class AnalyzeEndpointTests(unittest.TestCase):
         suggestion = result["suggested_tests"][0]
         self.assertEqual(
             set(suggestion),
-            {"title", "setup", "action", "expected_result", "evidence_basis"},
+            {
+                "title", "purpose", "setup", "action", "expected_result",
+                "what_to_check", "evidence_basis",
+            },
         )
         self.assertEqual(
             suggestion["evidence_basis"],
@@ -976,7 +1077,10 @@ class AnalyzeEndpointTests(unittest.TestCase):
         suggestion = result["suggested_tests"][0]
         self.assertEqual(
             set(suggestion),
-            {"title", "setup", "action", "expected_result", "evidence_basis"},
+            {
+                "title", "purpose", "setup", "action", "expected_result",
+                "what_to_check", "evidence_basis",
+            },
         )
         self.assertEqual(
             suggestion["evidence_basis"],
@@ -1042,7 +1146,10 @@ class AnalyzeEndpointTests(unittest.TestCase):
         suggestion = result["suggested_tests"][0]
         self.assertEqual(
             set(suggestion),
-            {"title", "setup", "action", "expected_result", "evidence_basis"},
+            {
+                "title", "purpose", "setup", "action", "expected_result",
+                "what_to_check", "evidence_basis",
+            },
         )
         self.assertTrue(suggestion["title"])
         self.assertEqual(

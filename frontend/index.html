@@ -61,6 +61,11 @@
                 rows="5"
                 placeholder="Describe the unexpected behavior and what you expected to happen..."
             ></textarea>
+            <small>
+                Include what action you took, what you expected, what happened instead,
+                and any error message or stack trace. Example: “After signing in, the
+                profile page stays blank instead of showing my account details.”
+            </small>
 
             <!-- JavaScript will handle validation when this button is clicked -->
             <button id="analyzeBtn" type="button">
@@ -108,7 +113,7 @@
                         <strong>Trace the issue</strong>
                         <p>Find relevant source files.</p>
                     </div>
-                    <span class="step-state">Pending</span>
+                    <span class="step-state" id="workflow-retrieval">Pending</span>
                 </div>
 
                 <div class="workflow-step">
@@ -117,16 +122,25 @@
                         <strong>Investigate</strong>
                         <p>Review possible leads without assuming a cause.</p>
                     </div>
-                    <span class="step-state">Pending</span>
+                    <span class="step-state" id="workflow-evidence">Pending</span>
                 </div>
 
                 <div class="workflow-step">
                     <span class="step-number">3</span>
                     <div>
+                        <strong>Review report</strong>
+                        <p>Inspect the findings and cited source lines.</p>
+                    </div>
+                    <span class="step-state" id="workflow-report">Pending</span>
+                </div>
+
+                <div class="workflow-step">
+                    <span class="step-number">4</span>
+                    <div>
                         <strong>Verify</strong>
                         <p>Run a regression test yourself when ready.</p>
                     </div>
-                    <span class="step-state">Pending</span>
+                    <span class="step-state" id="workflow-verification">NOT RUN</span>
                 </div>
             </div>
         </section>

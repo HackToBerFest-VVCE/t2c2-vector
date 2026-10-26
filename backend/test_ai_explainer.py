@@ -174,6 +174,106 @@ class GeminiExplainerTests(unittest.TestCase):
         self.assertFalse(result.available)
         self.assertEqual(result.reason, "incomplete_response")
 
+    def test_duplicate_evidence_locations_are_removed_before_generation(self):
+        snippets, locations = ai_explainer._select_evidence(
+            [
+                self.EVIDENCE[0],
+                self.EVIDENCE[0],
+                "src/payment.py:18: [match: retry] retry_payment()",
+            ]
+        )
+
+        self.assertEqual(len(snippets), 2)
+        self.assertEqual(
+            locations,
+            {("src/payment.py", 12), ("src/payment.py", 18)},
+        )
+
+    def test_timeout_and_bounded_retry_configuration_are_applied(self):
+        client, fake_genai, fake_types = self.make_mock_client()
+
+        with (
+            patch.object(ai_explainer, "_read_api_key", return_value="test-key"),
+            patch.object(ai_explainer, "genai", fake_genai),
+            patch.object(ai_explainer, "types", fake_types),
+            patch.dict("os.environ", {"REPOBRIDGE_GEMINI_TIMEOUT_MS": "2500"}),
+        ):
+            result = ai_explainer.explain_bug(
+                "Payment requests time out.",
+                self.EVIDENCE,
+            )
+
+        self.assertFalse(result.available)
+        self.assertEqual(result.reason, "empty_response")
+        fake_types.HttpOptions.assert_called_once()
+        self.assertEqual(
+            fake_types.HttpOptions.call_args.kwargs["timeout"],
+            2500,
+        )
+        retry_options = fake_types.HttpRetryOptions.call_args.kwargs
+        self.assertEqual(retry_options["attempts"], 2)
+        self.assertEqual(retry_options["initial_delay"], 0.25)
+        self.assertEqual(retry_options["max_delay"], 0.5)
+        self.assertEqual(
+            retry_options["http_status_codes"],
+            [408, 500, 502, 503, 504],
+        )
+        client.close.assert_called_once()
+
+    def test_request_timeout_returns_fallback_without_logging_error_details(self):
+        api_key = "test-key-do-not-log"
+        provider_detail = "private timeout response detail"
+        client, fake_genai, fake_types = self.make_mock_client(
+            side_effect=TimeoutError(provider_detail)
+        )
+
+        with (
+            patch.object(ai_explainer, "_read_api_key", return_value=api_key),
+            patch.object(ai_explainer, "genai", fake_genai),
+            patch.object(ai_explainer, "types", fake_types),
+            self.assertLogs(ai_explainer._LOGGER, level="WARNING") as captured,
+        ):
+            result = ai_explainer.explain_bug(
+                "Payment requests time out.",
+                self.EVIDENCE,
+            )
+
+        self.assertFalse(result.available)
+        self.assertEqual(result.reason, "timeout_network")
+        self.assertEqual(len(captured.output), 1)
+        self.assertNotIn(api_key, captured.output[0])
+        self.assertNotIn(provider_detail, captured.output[0])
+        client.close.assert_called_once()
+
+    def test_default_timeout_is_bounded_and_generation_time_is_logged(self):
+        client, fake_genai, fake_types = self.make_mock_client()
+
+        with (
+            patch.object(ai_explainer, "_read_api_key", return_value="test-key"),
+            patch.object(ai_explainer, "genai", fake_genai),
+            patch.object(ai_explainer, "types", fake_types),
+            patch.object(ai_explainer.os, "environ", {}),
+            self.assertLogs(ai_explainer._LOGGER, level="INFO") as captured,
+        ):
+            result = ai_explainer.explain_bug(
+                "Payment requests time out.",
+                self.EVIDENCE,
+            )
+
+        self.assertFalse(result.available)
+        self.assertEqual(result.reason, "empty_response")
+        self.assertEqual(
+            fake_types.HttpOptions.call_args.kwargs["timeout"],
+            ai_explainer.DEFAULT_REQUEST_TIMEOUT_MS,
+        )
+        self.assertTrue(
+            any(
+                "stage=gemini_generation" in line and "duration_ms=" in line
+                for line in captured.output
+            )
+        )
+        client.close.assert_called_once()
+
     def test_missing_key_falls_back_without_creating_a_client(self):
         client, fake_genai, fake_types = self.make_mock_client()
 

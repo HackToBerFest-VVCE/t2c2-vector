@@ -63,6 +63,8 @@ Open `http://127.0.0.1:5000` in your browser. The backend serves the frontend an
 
 The current entrypoint starts Flask with debug mode enabled. This is intended for local development and should not be exposed as a production server.
 
+Gemini explanations are optional. Each request uses a 6-second timeout by default, with at most one retry for transient network or server errors. To adjust the per-request timeout, set `REPOBRIDGE_GEMINI_TIMEOUT_MS` to a value from 1000 to 30000; if Gemini is unavailable, the rule-based report is returned instead.
+
 ## Usage
 
 1. Enter a public GitHub repository URL, for example `https://github.com/pallets/flask`.
@@ -95,7 +97,9 @@ The successful response includes an investigation report, `suggested_tests`, and
 }
 ```
 
-`suggested_tests` contains ideas for a developer to run manually; it does not mean a test was executed.
+Successful reports also include `workflow`: source retrieval is marked `SUCCEEDED`, evidence search is `LEAD_FOUND` or `NO_MATCH`, the report is `READY_FOR_REVIEW`, and verification remains `NOT_RUN`. Retrieval errors return a failed retrieval workflow instead of a successful report state.
+
+`suggested_tests` contains ideas for a developer to run manually; supported scenarios include a purpose, setup/action steps, expected result, what to check, and an evidence citation. It does not mean a test was executed.
 
 ## Run the backend tests
 
